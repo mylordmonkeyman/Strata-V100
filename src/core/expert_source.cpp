@@ -1,3 +1,4 @@
+#include "strata/telemetry/compare_telemetry.hpp"
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
 #include "strata/core/remote_experts.hpp"
@@ -1613,6 +1614,7 @@ static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify wi
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out) {
+    v100_compare::HostSpan moe_span(d.layers, v100_compare::Stage::moe);
     using namespace strata::kernels::cpu;
     if (d.failed) return;
     if (n_tok < 1 || n_tok > MAXT) {
@@ -1858,6 +1860,49 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     for (int64_t i = 0; i < n_tok * k; ++i) {
         const int64_t e = ids[i];
         if (e >= 0 && e < d.n_expert) d.job_of[(size_t) e] = -1;
+    }
+    if (v100_compare::active && d.remote_count == 0) {
+        using C = v100_compare::Counter;
+        auto& round = *v100_compare::active;
+        const unsigned layer = static_cast<unsigned>(d.layers);
+        const auto add = [&](C key, std::uint64_t value) { round.counter(layer, key, value); };
+        std::uint64_t resident = 0, cpu = 0, transient = 0;
+        std::array<bool, 512> seen{}, seen_resident{}, seen_missed{};
+        for (int64_t i = 0; i < n_tok * k; ++i) {
+            resident += kind[i] == 0;
+            cpu += kind[i] < 0;
+            transient += kind[i] == 1;
+            if (ids[i] >= 0 && ids[i] < 512) {
+                seen[ids[i]] = true;
+                if (kind[i] == 0) seen_resident[ids[i]] = true;
+                else seen_missed[ids[i]] = true;
+            }
+        }
+        const auto distinct = [](const auto& flags) {
+            return static_cast<std::uint64_t>(std::count(flags.begin(), flags.end(), true));
+        };
+        add(C::routed_tokens, n_tok);
+        add(C::total_routes, n_tok * k);
+        add(C::resident_routes, resident);
+        add(C::cpu_routes, cpu);
+        add(C::nonresident_gpu_routes, transient);
+        add(C::distinct_experts, distinct(seen));
+        add(C::resident_distinct_experts, distinct(seen_resident));
+        add(C::distinct_missed_experts, distinct(seen_missed));
+        std::uint64_t grouped = 0, grouped_routes = 0, weight_bytes = 0;
+        for (int j = 0; j < njobs; ++j) {
+            const auto& job = d.jobs_multi[static_cast<std::size_t>(j)];
+            grouped += job.nt > 1;
+            if (job.nt > 1) grouped_routes += job.nt;
+            weight_bytes += lay.blob_bytes(d.layers);
+        }
+        add(C::cpu_groups, grouped);
+        add(C::cpu_grouped_routes, grouped_routes);
+        add(C::cpu_weight_read_bytes, weight_bytes);
+        // Direct mapped expert reads have no explicit copy-byte count here.
+        // Expert DMA and output traffic must be observed at their native producer.
+        round.duration(layer, v100_compare::Stage::cpu_expert,
+            std::chrono::duration<double, std::micro>(c4-c3).count());
     }
     d.multi_misses += njobs;
     ++d.layers;

@@ -1,3 +1,4 @@
+#include "strata/telemetry/compare_telemetry.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -988,6 +989,7 @@ double probe_pcie_h2d_gbps() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    (void)v100_compare::level();
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.

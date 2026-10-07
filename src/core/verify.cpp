@@ -1,3 +1,4 @@
+#include "strata/telemetry/round_scope.hpp"
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
 #if defined(_WIN32)
@@ -1034,6 +1035,7 @@ bool Verifier::capture_commit(std::string& err) {
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+    strata::telemetry::RoundScope telemetry_round("verify");
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
@@ -1088,6 +1090,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
     for (int64_t k = 0; k < steps; ++k) {
         const int64_t l = lb_ + k / G;
+        v100_compare::HostSpan layer_span(l, v100_compare::Stage::layer);
         const int grp = (int) (k % G);
         const uint32_t want = (uint32_t) (k + 1);
         const Clock::time_point a = Clock::now();
@@ -1225,6 +1228,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     ++windows;
     progress_at("decode");
     progress_beat();
+    telemetry_round.success();
     return true;
 }
 

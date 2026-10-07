@@ -1,3 +1,4 @@
+#include "strata/telemetry/round_scope.hpp"
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
 #include "strata/kernels/mrope.hpp"
@@ -568,6 +569,7 @@ void SessionLoopScratch::free() {
 bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
                   PoolFn pool, HitFn hits, void* user, bool overlap, void* stream, std::string& err,
                   float* dump_layers, SessionLoopScratch* scratch) {
+    strata::telemetry::RoundScope telemetry_round("decode");
     if (!gr.captured || gr.n != g.n_layers) { err = "session_loop: not captured"; return false; }
     if (gr.parts_dev == nullptr) { err = "session_loop: the graphs were captured without a parts buffer"; return false; }
     if (s.db == nullptr) { err = "session_loop: no doorbell; the loop has nothing to poll"; return false; }
@@ -660,6 +662,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
     }
 
     for (int64_t l = 0; l < g.n_layers; ++l) {
+        v100_compare::HostSpan layer_span(l, v100_compare::Stage::layer);
         const auto t_launch = std::chrono::steady_clock::now();
 
         // ---- poll for the ring.  **THE DRIVER CALL IS NOW A FALLBACK, NOT THE MECHANISM.**
@@ -775,6 +778,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
         gr.ms_host += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_ring).count();
     }
     if (cudaStreamSynchronize(cs) != cudaSuccess) { err = "session_loop: final sync"; return false; }
+    telemetry_round.success();
     return true;
 }
 

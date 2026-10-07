@@ -1,3 +1,4 @@
+#include "strata/telemetry/round_scope.hpp"
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/mtp.hpp"
@@ -1085,6 +1086,7 @@ struct PfTimer {
 }  // namespace
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    strata::telemetry::RoundScope telemetry_round("prefill");
     err.clear();
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
@@ -2138,6 +2140,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         }
         std::fprintf(stderr, "strata prefill: GDN_HASH %s\n", line.c_str());
     }
+    telemetry_round.success();
     return true;
 }
 
