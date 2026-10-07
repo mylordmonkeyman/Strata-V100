@@ -1,5 +1,5 @@
 #pragma once
-#include "strata/telemetry/compare_telemetry.hpp"
+#include "strata/telemetry/lifecycle_telemetry.hpp"
 #include <atomic>
 #include <optional>
 
@@ -10,7 +10,8 @@ class RoundScope {
 public:
     explicit RoundScope(const char* phase) {
         if (v100_compare::level() && !v100_compare::active)
-            round_.emplace("strata", "strata:" + std::to_string(sequence.fetch_add(1)), phase);
+            round_.emplace("strata", v100_compare::linked_round_id.empty() ?
+                "strata:" + std::to_string(sequence.fetch_add(1)) : std::string(v100_compare::linked_round_id), phase);
     }
     ~RoundScope() { if (round_ && !success_) round_->fail(); }
     template<class Token> void inputs(const Token* tokens, unsigned columns, std::int64_t first_index,

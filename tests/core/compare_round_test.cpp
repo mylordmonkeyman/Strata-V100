@@ -4,6 +4,7 @@
 int main() {
     const std::array<int32_t, 2> input{101, 202}, sampled{303, 404};
     {
+        v100_compare::RoundLink link("strata");
         strata::telemetry::RoundScope owner("verify");
         owner.inputs(input.data(), 2, 42, "cuda_graph");
         {

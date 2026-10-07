@@ -1,4 +1,4 @@
-#include "strata/telemetry/compare_telemetry.hpp"
+#include "strata/telemetry/lifecycle_telemetry.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -787,7 +787,7 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
         std::fprintf(f, "  memory: %llu MiB resident, %llu MiB %s, %llu MiB RAM available; %llu %s\n", m.rss_mib,
                      m.commit_mib,
 #if defined(_WIN32)
-                     "committed", m.avail_mib, m.faults, "page faults so far"
+                     "commit_returned", m.avail_mib, m.faults, "page faults so far"
 #else
                      "in swap", m.avail_mib, m.faults, "major page faults so far"
 #endif
@@ -5463,6 +5463,7 @@ int main(int argc, char** argv) {
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             if (cancelled) finish = "cancel";
+            const auto telemetry_sequence = v100_compare::level() ? v100_compare::sequence_trace("strata") : std::string{};
             while (!cancelled && produced_n < max_new) {
                 int T = S_mtp;
                 if (req_spec_min_p > 0.0) {
@@ -5504,12 +5505,24 @@ int main(int argc, char** argv) {
                 }
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
+                v100_compare::RoundLink telemetry_link("strata");
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                const auto lifecycle = [&](const char* kind, const char* semantics, const int32_t* ids, int count) {
+                    if (!v100_compare::level()) return;
+                    v100_compare::LifecycleEvent event{
+                        .engine="strata", .round_id=telemetry_link.id(), .sequence_trace_id=telemetry_sequence,
+                        .event=kind, .first_token_index=static_cast<std::uint64_t>(p),
+                        .proposed_drafts=static_cast<std::uint64_t>(T-1), .accepted_drafts=static_cast<std::uint64_t>(a),
+                        .verified_tokens=static_cast<std::uint64_t>(a+1), .token_semantics=semantics,
+                        .proposal_source=from_sfx ? "suffix" : "mtp"};
+                    event.tokens(std::span<const int32_t>(ids, static_cast<std::size_t>(count))); event.emit();
+                };
+                lifecycle("verified", "verified_output_candidates", outv.data(), a+1);
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
@@ -5521,11 +5534,13 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                lifecycle("commit_returned", "input_state_prefix", window.data(), a+1);
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
                 draft_accepted += a;
                 first_window = false;
+                const auto emitted_before = produced_n;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
                     std::printf("T %d\n", (int) outv[(size_t) i]);
@@ -5534,6 +5549,7 @@ int main(int argc, char** argv) {
                     if (o.suffix_draft > 0) sfx.append(outv[(size_t) i]);
                     eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 }
+                lifecycle("emitted", "output_tokens", outv.data(), static_cast<int>(produced_n-emitted_before));
                 std::fflush(stdout);
                 ++rounds;
                 const Clock::time_point tw2 = Clock::now();
@@ -6279,6 +6295,7 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        const auto telemetry_sequence = v100_compare::level() ? v100_compare::sequence_trace("strata") : std::string{};
         while ((int64_t) produced.size() < o.max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = S_mtp;
@@ -6315,6 +6332,7 @@ int main(int argc, char** argv) {
             drive.d.experts = 0;
             drive.d.failed = false;
             apply_pending(false);
+            v100_compare::RoundLink telemetry_link("strata");
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
@@ -6327,6 +6345,17 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            const auto lifecycle = [&](const char* kind, const char* semantics, const int32_t* ids, int count) {
+                if (!v100_compare::level()) return;
+                v100_compare::LifecycleEvent event{
+                    .engine="strata", .round_id=telemetry_link.id(), .sequence_trace_id=telemetry_sequence,
+                    .event=kind, .first_token_index=static_cast<std::uint64_t>(p),
+                    .proposed_drafts=static_cast<std::uint64_t>(T-1), .accepted_drafts=static_cast<std::uint64_t>(a),
+                    .verified_tokens=static_cast<std::uint64_t>(a+1), .token_semantics=semantics,
+                    .proposal_source=from_sfx ? "suffix" : use_mtp ? "mtp" : "oracle"};
+                event.tokens(std::span<const int32_t>(ids, static_cast<std::size_t>(count))); event.emit();
+            };
+            lifecycle("verified", "verified_output_candidates", outv.data(), a+1);
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
@@ -6352,17 +6381,20 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            lifecycle("commit_returned", "input_state_prefix", window.data(), a+1);
             ++rounds;
             drafts_total += T - 1;
             drafts_ok += a;
             ++accepted_hist[(size_t) a];
             if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
+            const auto emitted_before = produced.size();
             bool eos = false;
             for (int i = 0; i <= a && (int64_t) produced.size() < o.max_new && !eos; ++i) {
                 produced.push_back(outv[(size_t) i]);
                 if (o.suffix_draft > 0) sfx.append(outv[(size_t) i]);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
             }
+            lifecycle("emitted", "output_tokens", outv.data(), static_cast<int>(produced.size()-emitted_before));
             if (eos) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
