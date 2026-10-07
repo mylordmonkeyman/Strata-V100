@@ -5510,6 +5510,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
+                telemetry_link.finish();
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
                 const auto lifecycle = [&](const char* kind, const char* semantics, const int32_t* ids, int count) {
@@ -6337,6 +6338,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            telemetry_link.finish();
             if (drive.d.failed) {
                 std::fprintf(stderr, "strata generate: the expert pool failed at layer %lld expert %lld: %s\n",
                              (long long) drive.d.fail_layer, (long long) drive.d.fail_expert,
