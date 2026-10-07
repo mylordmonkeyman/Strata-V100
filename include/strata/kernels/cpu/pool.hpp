@@ -29,6 +29,7 @@
 
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/telemetry/compare_telemetry.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -129,6 +130,9 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    // Owner supplies the actual layer before native dispatch; graph capture
+    // without an active telemetry round remains unobserved.
+    void set_telemetry_layer(unsigned layer) { telemetry_layer_ = layer; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
@@ -190,6 +194,12 @@ public:
     static constexpr std::chrono::seconds kStall{60};
 
 private:
+    void begin_observation();
+    void end_observation();
+    std::uint64_t pool_id_ = v100_compare::pool_sequence.fetch_add(1);
+    unsigned telemetry_layer_ = 48;
+    int telemetry_level_ = 0;
+    std::vector<v100_compare::WorkerObservation> worker_observations_;
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);

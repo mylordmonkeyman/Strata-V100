@@ -355,6 +355,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     }
     if (n_ < 1) n_ = 1;
     scratch_.resize((size_t) n_);
+    worker_observations_.resize((size_t) n_ + 1); // final slot is the host drainer
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
     hstate_ms_.store(now_ms());
@@ -513,6 +514,21 @@ void ExpertPool::wait_done(int n) {
     }
 }
 
+void ExpertPool::begin_observation() {
+    telemetry_level_ = v100_compare::active && telemetry_layer_ < 48 ? v100_compare::level() : 0;
+    if (!telemetry_level_) return;
+    for (unsigned i = 0; i < worker_observations_.size(); ++i) {
+        auto& w = worker_observations_[i]; w = {};
+        w.pool_id = pool_id_; w.worker_id = i; w.configured_workers = n_;
+        w.host = i == static_cast<unsigned>(n_); w.timing_observed = telemetry_level_ >= 2;
+    }
+}
+
+void ExpertPool::end_observation() {
+    if (telemetry_level_)
+        for (const auto& w : worker_observations_) v100_compare::active->worker(telemetry_layer_, w);
+}
+
 void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     (void) id;
     for (;;) {
@@ -521,6 +537,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         const uint32_t i = (uint32_t) ci;
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
+        const auto started = telemetry_level_ >= 2 ? v100_compare::Clock::now() : v100_compare::Clock::time_point{};
         if (mode_ == 0) {
             const ExpertJob& j = jobs_[i];
             s2_expert_vnni_q(j.blob, *j.act, j.out, scratch);
@@ -589,18 +606,26 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 r += r1 - r0;
             }
         }
+        if (telemetry_level_) {
+            const unsigned phase = mode_ == 1 || mode_ == 3 || mode_ == 5 ? 1 :
+                (mode_ == 2 || mode_ == 4 || mode_ == 6 ? 2 : 0);
+            worker_observations_[id < 0 ? n_ : id].job(phase,
+                telemetry_level_ >= 2 ? v100_compare::elapsed_us(started) : 0, telemetry_level_ >= 2);
+        }
         done_.fetch_add(1, std::memory_order_release);
     }
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks) {
     wait_parked("before a phase");
+    begin_observation();
     mode_ = mode;
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
     if (host_works_) drain(-1, host_scratch_, e);
     wait_done(n_tasks);
     wait_parked("after a phase");
+    end_observation();
     hstate_.store(kIdle, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
 }
@@ -694,7 +719,14 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
 void ExpertPool::run(ExpertJob* jobs, int n) {
     if (n <= 0) return;
     if (n_ == 1) {   // no workers: run inline, so a single-core machine still produces a token
-        for (int i = 0; i < n; ++i) s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
+        begin_observation();
+        for (int i = 0; i < n; ++i) {
+            const auto started = telemetry_level_ >= 2 ? v100_compare::Clock::now() : v100_compare::Clock::time_point{};
+            s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
+            if (telemetry_level_) worker_observations_[n_].job(0,
+                telemetry_level_ >= 2 ? v100_compare::elapsed_us(started) : 0, telemetry_level_ >= 2);
+        }
+        end_observation();
         return;
     }
     // Wait for every worker to be parked BEFORE touching the batch, so the publish below is the only thing
@@ -704,6 +736,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     // slow at the WORK from one that is slow at the SYNCHRONISATION - and those need opposite fixes.
     const auto t_a = std::chrono::steady_clock::now();
     wait_parked("before a batch");
+    begin_observation();
     const auto t_b = std::chrono::steady_clock::now();
     jobs_ = jobs;
     njobs_ = n;
@@ -731,7 +764,10 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
             hstate_.store(ci, std::memory_order_relaxed);
             hstate_ms_.store(now_ms(), std::memory_order_relaxed);
             const ExpertJob& j = jobs_[ci];
+            const auto started = telemetry_level_ >= 2 ? v100_compare::Clock::now() : v100_compare::Clock::time_point{};
             s2_expert_vnni_q(j.blob, *j.act, j.out, host_scratch_);
+            if (telemetry_level_) worker_observations_[n_].job(0,
+                telemetry_level_ >= 2 ? v100_compare::elapsed_us(started) : 0, telemetry_level_ >= 2);
             done_.fetch_add(1, std::memory_order_release);
         }
     }
@@ -741,6 +777,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     // not enough.
     const auto t_c = std::chrono::steady_clock::now();
     wait_parked("after a batch");
+    end_observation();
     hstate_.store(kIdle, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     const auto t_d = std::chrono::steady_clock::now();

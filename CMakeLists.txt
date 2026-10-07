@@ -1066,6 +1066,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+  add_executable(compare_pool_test tests/core/compare_pool_test.cpp)
+  target_link_libraries(compare_pool_test PRIVATE strata_kernels_cpu)
+  add_test(NAME compare_pool_test COMMAND compare_pool_test)
+  set_tests_properties(compare_pool_test PROPERTIES SKIP_RETURN_CODE 77)
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)

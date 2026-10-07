@@ -1591,6 +1591,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
     }
 
     // Plan v0.3 P4: rows of every expert across all threads (bitwise the same as `run`).
+    d.pool->set_telemetry_layer(static_cast<unsigned>(d.layers));
     if (d.split_rows) d.pool->run_split(d.jobs.data(), (int) njobs);
     else d.pool->run(d.jobs.data(), (int) njobs);
     if (d.remote_count > 0) {
@@ -1840,6 +1841,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // skip the zero-job publish+park barrier entirely - usage counts, the counters and the remote stages
     // above/below are unaffected, and nothing is computed for a batch of zero.
     if (njobs > 0) {
+        d.pool->set_telemetry_layer(static_cast<unsigned>(d.layers));
         if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
