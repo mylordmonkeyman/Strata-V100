@@ -1088,6 +1088,7 @@ struct PfTimer {
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     strata::telemetry::RoundScope telemetry_round("prefill");
     err.clear();
+    if (n > 0 && n <= UINT32_MAX) telemetry_round.inputs(tokens, (unsigned) n, pos0, "eager");
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;

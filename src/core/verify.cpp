@@ -1039,6 +1039,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    telemetry_round.inputs(tokens, (unsigned) T, pos0, "cuda_graph");
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1195,7 +1196,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
     if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
-        return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+        const bool ok = next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+        if (ok) {
+            if (next_ != nullptr) telemetry_round.sampled_tokens(out, (unsigned) T);
+            telemetry_round.success();
+        }
+        return ok;
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
@@ -1228,6 +1234,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     ++windows;
     progress_at("decode");
     progress_beat();
+    telemetry_round.sampled_tokens(out, (unsigned) T);
     telemetry_round.success();
     return true;
 }

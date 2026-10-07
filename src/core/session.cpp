@@ -574,6 +574,8 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
     if (gr.parts_dev == nullptr) { err = "session_loop: the graphs were captured without a parts buffer"; return false; }
     if (s.db == nullptr) { err = "session_loop: no doorbell; the loop has nothing to poll"; return false; }
 
+    // The embedding ingress is device-owned here. PLE's token is not universally populated.
+    telemetry_round.inputs<int32_t>(nullptr, 1, pos, "cuda_graph");
     cudaStream_t cs = (cudaStream_t) stream;
     const int64_t k = s.k;
     const size_t parts_bytes = (size_t) k * g.n_embd * 4;
