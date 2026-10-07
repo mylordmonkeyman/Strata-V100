@@ -5558,8 +5558,14 @@ int main(int argc, char** argv) {
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = eos || produced_n >= max_new ||
-                                     mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                bool drafted = true;
+                if (!eos && produced_n < max_new) {
+                    int produced_drafts = 0;
+                    v100_compare::DraftCall observation("strata", telemetry_sequence, p + a + 1, telemetry_link.id());
+                    drafted = mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(),
+                                        (float) req_spec_min_p, &produced_drafts);
+                    if (drafted) observation.complete(std::span<const int32_t>(drafts.data(), produced_drafts));
+                }
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -6276,10 +6282,16 @@ int main(int argc, char** argv) {
         // plan v0.3 P6: with a native pack the first window is the last prompt token alone (it produces the first
         // generated token and the MTP's first cell); otherwise the token loop already did that.
         bool first_window = native_pack;
-        if (use_mtp && !first_window &&
-            !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
+        const auto telemetry_sequence = v100_compare::level() ? v100_compare::sequence_trace("strata") : std::string{};
+        if (use_mtp && !first_window) {
+            int produced_drafts = 0;
+            v100_compare::DraftCall observation("strata", telemetry_sequence, p);
+            if (!mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(),
+                                 (float) o.spec_min_p, &produced_drafts)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            observation.complete(std::span<const int32_t>(drafts.data(), produced_drafts));
         }
         std::vector<int32_t> window((size_t) o.spec), outv((size_t) o.spec);
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
@@ -6296,7 +6308,6 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
-        const auto telemetry_sequence = v100_compare::level() ? v100_compare::sequence_trace("strata") : std::string{};
         while ((int64_t) produced.size() < o.max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = S_mtp;
@@ -6402,8 +6413,14 @@ int main(int argc, char** argv) {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= o.max_new ||
-                                 mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
+            bool drafted = true;
+            if (use_mtp && (int64_t) produced.size() < o.max_new) {
+                int produced_drafts = 0;
+                v100_compare::DraftCall observation("strata", telemetry_sequence, p + a + 1, telemetry_link.id());
+                drafted = mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(),
+                                    (float) o.spec_min_p, &produced_drafts);
+                if (drafted) observation.complete(std::span<const int32_t>(drafts.data(), produced_drafts));
+            }
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
             if (!drafted) {
