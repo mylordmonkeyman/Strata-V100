@@ -1358,10 +1358,12 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         bool normed = false;   // F-2: the previous half's write already normed R for this half (grs, xn16)
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
+            v100_compare::HostSpan layer_span(l, v100_compare::Stage::layer);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
             // ---- the PLE block at layer 1, token by token (its conv reads the previous tokens' rows)
             if (l == 1 && ple_on && ple_batch) {
+                v100_compare::HostSpan ple_span(l, v100_compare::Stage::ple);
                 // the whole chunk at once, in sub-batches carved from the idle scratch region: the key and value
                 // projections as GEMMs (a token at a time they re-read ~52 MB of BF16 key per token on the IQ
                 // files), the rest with the per-token kernels' arithmetic (native_ple_postops_batch)
@@ -1402,6 +1404,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                 }
                 stats_.ms_ple += ms_since(tp);
             } else if (l == 1 && ple_on) {
+                v100_compare::HostSpan ple_span(l, v100_compare::Stage::ple);
                 pt.mark(kPfPle, cs);
                 const auto tp = Clock::now();
                 for (int64_t t = 0; t < T; ++t) {
@@ -1437,6 +1440,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                               m.mixed_bf_lo);
 
                 if (half == 0 && !core::is_qsa_layer(g, l)) {
+                    v100_compare::HostSpan gdn_span(l, v100_compare::Stage::gdn);
                     // ======================= GDN =======================
                     const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
                                           *wo = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
@@ -1460,6 +1464,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err)) return false;
                     ++gdn_index;
                 } else if (half == 0) {
+                    v100_compare::HostSpan qsa_span(l, v100_compare::Stage::qsa);
                     // ======================= QSA =======================
                     const core::QsaState& st = ss.qsa_states[qsa_index];
                     const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
@@ -1661,6 +1666,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;
                     ++qsa_index;
                 } else {
+                    v100_compare::HostSpan moe_span(l, v100_compare::Stage::moe);
                     // ======================= MoE =======================
                     const core::WeightRef *wr = need(v, "ffn_gate_inp.weight", err),
                                           *wgi = need(v, "ffn_gate_inp_shexp.weight", err),
