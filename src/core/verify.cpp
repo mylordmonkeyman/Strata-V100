@@ -1279,9 +1279,23 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
 void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes) {
     Verifier* v = (Verifier*) ctx;
     const uint32_t want = v->cur_layer_ + 1;
-    if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
+    const int groups = v->groups_[v->last_t_] > 0 ? v->groups_[v->last_t_] : 1;
+    // cur_layer_ numbers doorbell steps (including split groups), not model layers.
+    const unsigned telemetry_layer = (unsigned) (v->lb_ + v->cur_layer_ / groups);
+    if (n <= 0) {
+        if (v100_compare::active)
+            v100_compare::active->counter(telemetry_layer, v100_compare::Counter::expert_h2d_bytes, 0);
+        raise_flag(v->h_flagB_, want); return;
+    }
     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
-    for (int i = 0; i < n; ++i) cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
+    for (int i = 0; i < n; ++i) {
+        const cudaError_t copied = cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
+        if (v100_compare::active) {
+            if (copied == cudaSuccess)
+                v100_compare::active->counter(telemetry_layer, v100_compare::Counter::expert_h2d_bytes, bytes);
+            else v100_compare::active->fail();
+        }
+    }
     FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
     fs.flag = v->h_flagB_;
     fs.value = want;

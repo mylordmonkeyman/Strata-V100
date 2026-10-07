@@ -1482,10 +1482,25 @@ bool FileExpertSource::pcie_layer(int64_t layer) const {
 
 // ================================ THE ADAPTER ================================
 
+namespace {
+// Callbacks signal native errors through ExpertDispatch; a successful outer loop
+// must not turn a failed adapter dispatch into a successful measurement.
+class DispatchFailureScope {
+public:
+    explicit DispatchFailureScope(const bool& failed) : failed_(failed), owner_(v100_compare::active) {}
+    ~DispatchFailureScope() { if (owner_ && failed_) owner_->fail(); }
+private:
+    const bool& failed_;
+    v100_compare::Round* owner_;
+};
+}  // namespace
+
 void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,
                           int64_t k, float* out) {
     (void) weights;   // clause 2: `moe_combine` applies it on the device.  Not an oversight.
     ExpertDispatch& d = *(ExpertDispatch*) user;
+    DispatchFailureScope failure_scope(d.failed);
+    v100_compare::HostSpan moe_span(d.layers, v100_compare::Stage::moe);
     if (d.failed) return;   // a previous layer already failed; do not make it worse
 
     using namespace strata::kernels::cpu;
@@ -1591,15 +1606,50 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
     }
 
     // Plan v0.3 P4: rows of every expert across all threads (bitwise the same as `run`).
+    const auto cpu_started = v100_compare::active ? v100_compare::Clock::now() : v100_compare::Clock::time_point{};
     d.pool->set_telemetry_layer(static_cast<unsigned>(d.layers));
     if (d.split_rows) d.pool->run_split(d.jobs.data(), (int) njobs);
     else d.pool->run(d.jobs.data(), (int) njobs);
+    const double cpu_us = v100_compare::active ? v100_compare::elapsed_us(cpu_started) : 0;
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r)
             if (!d.remote[r]->finish(out, remote_error)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
+    }
+    if (v100_compare::active && d.remote_count == 0) {
+        using C = v100_compare::Counter;
+        auto& round = *v100_compare::active;
+        const unsigned layer = static_cast<unsigned>(d.layers);
+        const auto add = [&](C key, std::uint64_t value) { round.counter(layer, key, value); };
+        std::array<bool, 512> seen{}, seen_resident{}, seen_cpu{};
+        // Classify the actual submitted CPU job slots. The remaining rows belong
+        // to the persistent GPU cache; do not perform a fresh cache lookup here.
+        for (int64_t i = 0; i < k; ++i) {
+            const auto e = ids[i];
+            if (e < 0 || e >= 512) continue;
+            seen[e] = true;
+            const bool cpu = std::any_of(d.jobs.begin(), d.jobs.begin() + njobs,
+                [i](const auto& job) { return job.slot == i; });
+            if (cpu) seen_cpu[e] = true;
+            else seen_resident[e] = true;
+        }
+        const auto distinct = [](const auto& flags) {
+            return static_cast<std::uint64_t>(std::count(flags.begin(), flags.end(), true));
+        };
+        add(C::routed_tokens, 1);
+        add(C::total_routes, k);
+        add(C::resident_routes, k - njobs);
+        add(C::cpu_routes, njobs);
+        add(C::nonresident_gpu_routes, 0);
+        add(C::distinct_experts, distinct(seen));
+        add(C::resident_distinct_experts, distinct(seen_resident));
+        add(C::distinct_missed_experts, distinct(seen_cpu));
+        add(C::cpu_groups, 0);
+        add(C::cpu_grouped_routes, 0);
+        add(C::cpu_weight_read_bytes, std::uint64_t(njobs)*expert_layout().blob_bytes(d.layers));
+        round.duration(layer, v100_compare::Stage::cpu_expert, cpu_us);
     }
     ++d.layers;
     d.experts += k;
@@ -1615,6 +1665,7 @@ static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify wi
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out) {
+    DispatchFailureScope failure_scope(d.failed);
     v100_compare::HostSpan moe_span(d.layers, v100_compare::Stage::moe);
     using namespace strata::kernels::cpu;
     if (d.failed) return;
@@ -1913,6 +1964,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
 
 void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids, int64_t k) {
     ExpertDispatch& d = *(ExpertDispatch*) user;
+    DispatchFailureScope failure_scope(d.failed);
     if (d.failed) return;
     cudaStream_t cs = (cudaStream_t) stream;
 
