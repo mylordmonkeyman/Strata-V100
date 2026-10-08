@@ -1678,6 +1678,18 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     pt.mark(kPfRouter, cs);
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
+                    // Prefill routes exactly K experts per token. These two
+                    // counts are known from the submitted geometry and do NOT
+                    // require reading GPU router ids or synchronizing the stream.
+                    // Expert residency/CPU split is NOT observable on the fused
+                    // path; deliberately leave those counters absent (unknown).
+                    if (v100_compare::active && T > 0) {
+                        auto& round = *v100_compare::active;
+                        round.counter((unsigned) l, v100_compare::Counter::routed_tokens,
+                                      (std::uint64_t) T);
+                        round.counter((unsigned) l, v100_compare::Counter::total_routes,
+                                      (std::uint64_t) T * (std::uint64_t) K);
+                    }
                     // the shared expert and its scalar gate
                     if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err)) return false;
                     if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err)) return false;
