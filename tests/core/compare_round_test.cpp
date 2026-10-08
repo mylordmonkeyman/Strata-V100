@@ -15,6 +15,18 @@ int main() {
         owner.sampled_tokens(sampled.data(), 2);
         owner.success();
     }
+    {
+        strata::telemetry::RoundScope prefill("prefill");
+        prefill.inputs(input.data(), 2, 100, "eager");
+        // GPU router shape is observable without reading or synchronizing ids.
+        // Residency classes are not available on fused prefill; do not assert
+        // or serialize fabricated zeros for those fields.
+        if (v100_compare::active) {
+            v100_compare::active->counter(0, v100_compare::Counter::routed_tokens, 2);
+            v100_compare::active->counter(0, v100_compare::Counter::total_routes, 20);
+        }
+        prefill.success();
+    }
     { strata::telemetry::RoundScope failed("verify"); }
     try {
         strata::telemetry::RoundScope unwind("verify");
