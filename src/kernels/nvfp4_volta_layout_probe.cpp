@@ -247,7 +247,7 @@ int main(int argc,char** argv)try{
         }
         std::printf("\"relative_l2\":{\"serial\":%.9g,\"batch\":%.9g,\"chunkmajor\":%.9g,\"scalar\":%.9g}",
                     parity[0],parity[1],parity[2],parity[3]);
-        if(!no_graph){
+        if(!no_graph && rounds>=5){
             std::printf(",\"graph_median_us\":{\"serial\":%.6f,\"batch\":%.6f,\"chunkmajor\":%.6f,\"scalar\":%.6f}",
                         med(graph_times[0]),med(graph_times[1]),med(graph_times[2]),med(graph_times[3]));
         }
