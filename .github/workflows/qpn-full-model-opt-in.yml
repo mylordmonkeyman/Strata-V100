@@ -1,9 +1,10 @@
-name: QPN fused vs original MMQ performance-only ABBA
+name: QPN grouped ragged vs fused QPN performance-only ABBA
 on:
   push:
     branches: ['qpn/performance-first']
     paths:
       - 'src/prefill/prefill.cpp'
+      - 'tools/qpn_ragged_batch_probe.cu'
       - 'src/kernels/cuda/nvfp4_volta_qpn_decode.cu'
       - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
       - 'tools/test_qpn_full_model_perf.py'
@@ -51,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Build isolated candidate and compare original MMQ vs fused QPN on exact same model and prompt
+      - name: Build isolated candidate and compare original fused QPN vs grouped QPN on exact same model and prompt
         shell: bash
         run: |
           set -euo pipefail
@@ -84,7 +85,7 @@ jobs:
           "$py" tools/qpn_full_model_ab.py \
             --source "$PWD" --binary "$build/strata" --prepared "$source/prepared" \
             --state "$source" --report qpn-full-model-results --prefill 768 --runs 4 \
-            --performance-only
+            --batched-ab --performance-only
           "$py" -m json.tool qpn-full-model-results/summary.json >/dev/null
       - name: Upload numerical/TTFT aggregates only (raw token IDs, raw logits, logs stay private)
         if: always()

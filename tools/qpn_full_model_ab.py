@@ -112,7 +112,11 @@ def read_summary(log):
             'qpn_groups':sum(int(g[1]) for g in execution),
             'qpn_experts':sum(int(g[2]) for g in execution),
             'error_lines':sum("error" in line.lower() for line in text.splitlines())}
-def ab_modes(fusion_ab):
+def ab_modes(fusion_ab, batched_ab=False):
+    if fusion_ab and batched_ab:
+        raise ValueError("--fusion-ab and --batched-ab are mutually exclusive")
+    if batched_ab:
+        return ("qpn-fused", "qpn-batched", "qpn-batched", "qpn-fused")
     return ("qpn-base", "qpn-fused", "qpn-fused", "qpn-base") if fusion_ab else ("mmq", "qpn-fused", "qpn-fused", "mmq")
 
 
@@ -129,8 +133,11 @@ def main():
     for name in ("source","binary","prepared","state","report"):p.add_argument("--"+name,required=True,type=Path)
     p.add_argument("--prefill",type=int,default=768)
     p.add_argument("--runs",type=int,default=4)
-    p.add_argument("--fusion-ab",action="store_true",
-                   help="A=original QPN, B=opt-in fused QPN; both use matched QPN grouping")
+    choices=p.add_mutually_exclusive_group()
+    choices.add_argument("--fusion-ab",action="store_true",
+                   help="A=original QPN, B=fused per-expert QPN")
+    choices.add_argument("--batched-ab",action="store_true",
+                   help="A=fused per-expert QPN, B=grouped padded QPN")
     p.add_argument("--performance-only",action="store_true",
                    help="record first-logit KL and top-1, but do not fail A/B solely on model-quality threshold")
     a=p.parse_args()
@@ -156,7 +163,7 @@ def main():
          "--expert-cache","auto","--expert-profile",str(a.source/"data/expert-profile.bin"),
          "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","2",
          "--suffix-draft","0","--adapt-every","0","--vram-reserve-mib","1536","--stats"]
-    modes=ab_modes(a.fusion_ab)
+    modes=ab_modes(a.fusion_ab,a.batched_ab)
     summary={'schema':2,'scope':'performance-focused staged 768-row full-model ABBA; not default 1024 stream-all path',
              'control_mode':modes[0],'candidate_mode':modes[1],
              'performance_only':a.performance_only,'numerical_quality_qualified':False,
@@ -171,7 +178,8 @@ def main():
     for idx,mode in enumerate(modes):
         trialenv=env.copy()
         trialenv['STRATA_QPN_PREFILL_EXPERIMENTAL']='0' if mode=='mmq' else '1'
-        trialenv['STRATA_QPN_PREFILL_FUSED_GU']='1' if mode=='qpn-fused' else '0'
+        trialenv['STRATA_QPN_PREFILL_FUSED_GU']='1' if mode in ('qpn-fused','qpn-batched') else '0'
+        trialenv['STRATA_QPN_PREFILL_BATCHED']='1' if mode=='qpn-batched' else '0'
         raw_log=private/f"{idx}-{mode}.log"
         raw_logits=private/f"{idx}-{mode}.logits.f32"
         if raw_log.exists():raw_log.unlink()

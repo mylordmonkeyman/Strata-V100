@@ -935,6 +935,10 @@ struct QpnPrefillScratch {
     std::uint16_t* x=nullptr;
     std::uint16_t* h=nullptr;
     float *gate=nullptr, *up=nullptr, *gu=nullptr;
+    // Only allocated with STRATA_QPN_PREFILL_BATCHED=1.
+    // Per 16-expert MMQ-owned group, separate from legacy single-expert scratch.
+    std::uint16_t *bx=nullptr, *bh=nullptr;
+    float *bgu=nullptr, *by=nullptr;
     ~QpnPrefillScratch() { release(); }
     void release() {
         if (x) cudaFree(x);
@@ -942,9 +946,13 @@ struct QpnPrefillScratch {
         if (gate) cudaFree(gate);
         if (up) cudaFree(up);
         if (gu) cudaFree(gu);
-        x=h=nullptr;gate=up=gu=nullptr;
+        if (bx) cudaFree(bx);
+        if (bh) cudaFree(bh);
+        if (bgu) cudaFree(bgu);
+        if (by) cudaFree(by);
+        x=h=bx=bh=nullptr;gate=up=gu=bgu=by=nullptr;
     }
-    bool allocate() {
+    bool allocate(bool batched) {
         constexpr std::size_t t=32, n=2560, ff=640;
         if (cudaMalloc(reinterpret_cast<void**>(&x), t*n*2)!=cudaSuccess ||
             cudaMalloc(reinterpret_cast<void**>(&h), t*ff*2)!=cudaSuccess ||
@@ -954,6 +962,19 @@ struct QpnPrefillScratch {
             (void) cudaGetLastError();
             release();
             return false;
+        }
+        // Keep all persistent scratch in one allocation phase, outside CUDA
+        // graph capture and independently of the cache/staging ring.
+        if (batched) {
+            constexpr std::size_t group=16;
+            if (cudaMalloc(reinterpret_cast<void**>(&bx),group*t*n*2)!=cudaSuccess ||
+                cudaMalloc(reinterpret_cast<void**>(&bh),group*t*ff*2)!=cudaSuccess ||
+                cudaMalloc(reinterpret_cast<void**>(&bgu),group*t*ff*2*4)!=cudaSuccess ||
+                cudaMalloc(reinterpret_cast<void**>(&by),group*t*n*4)!=cudaSuccess) {
+                (void) cudaGetLastError();
+                release();
+                return false;
+            }
         }
         return true;
     }
@@ -4253,6 +4274,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
                         bool qpn_layer = false;  // declared outside compact_l/else for the later compute lambda
                         bool qpn_fused_gu = false;  // shared with later group-compute lambda
+                        bool qpn_batched = false;   // explicit third opt-in; never default
 #endif
                         if (compact_l) {
                             // EVERY id 0..n_expert-1, count-0 ones included (their bounds are equal): a GROUPS batch
@@ -4292,6 +4314,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const bool qpn_plan_only=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_PLAN_CONTROL"));
                         qpn_fused_gu=qpn_execute &&
                             detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_FUSED_GU"));
+                        const bool batch_requested=detail::qpn_opt_in(
+                            std::getenv("STRATA_QPN_PREFILL_BATCHED"));
+                        if (batch_requested && !qpn_fused_gu) {
+                            err="experimental QPN batching requires QPN execution and fused GU";
+                            return false;
+                        }
+                        qpn_batched=qpn_fused_gu && batch_requested;
                         // Explicit matched-order MMQ control partitions routes but
                         // never invokes QPN. Both knobs are off by default.
                         if ((qpn_execute || qpn_plan_only) &&
@@ -4331,7 +4360,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     return false;
                                 }
                                 auto scratch=std::make_unique<QpnPrefillScratch>();
-                                if(!scratch->allocate()) {
+                                if(!scratch->allocate(qpn_batched)) {
                                     err="experimental QPN scratch allocation failed (no fallback after changing route ownership)";
                                     return false;
                                 }
@@ -5159,42 +5188,71 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                             err="experimental QPN GU output initialization failed";
                                             return false;
                                         }
-                                        for(int i=0;i<ngx;i++) {
+                                        // Validate *all* group bounds before issuing
+                                        // any asynchronous work on QPN-owned rows.
+                                        for (int i=0;i<ngx;i++) {
                                             const int64_t first=m.bounds_host[j0+(size_t)i];
                                             const int32_t rows=m.cnt[(size_t)order[j0+(size_t)i]];
-                                            if(rows<17 || rows>32 ||
+                                            if(rows<17 || rows>32 || first<0 ||
+                                               first+rows>T*K ||
                                                m.bounds_host[j0+(size_t)i+1]-first!=rows) {
                                                 err="experimental QPN group row bounds inconsistent";
                                                 return false;
                                             }
-                                            const auto* wgu=m.grp_gu+(size_t)i*mmq_gub;
-                                            const auto* wd=m.grp_d+(size_t)i*mmq_db;
-                                            const float* scales=m.grp_tail+(size_t)i*4;
-                                            // Gather one expert's original routing-order FP16
-                                            // inputs. No fabricated / repeated token positions.
-                                            gather_rows16(m.mixed_h,m.src_dev+first,qs.x,rows,N,m.cs);
-                                            if (qpn_fused_gu) {
-                                                // Same contiguous GGUF gate/up rows, now
-                                                // in one 1280-output projection. The new
-                                                // fused SwiGLU emits FP16 hidden directly:
-                                                // two fewer CUDA launches per expert.
-                                                strata::kernels::qpn::projection(
-                                                    wgu,qs.x,qs.gu,1280,(int)N,rows,schedule,m.cs);
-                                                strata::kernels::qpn::swiglu_stage_half(
-                                                    qs.gu,scales,qs.h,rows,640,m.cs);
-                                            } else {
-                                                // Keep unfused QPN for matched A/B.
-                                                strata::kernels::qpn::projection(
-                                                    wgu,qs.x,qs.gate,640,(int)N,rows,schedule,m.cs);
-                                                strata::kernels::qpn::projection(
-                                                    wgu+mmq_gub/2,qs.x,qs.up,640,(int)N,rows,schedule,m.cs);
-                                                strata::kernels::qpn::swiglu(
-                                                    qs.gate,qs.up,scales,m.H+first*640,(size_t)rows*640,m.cs);
-                                                strata::kernels::qpn::stage_f32(
-                                                    m.H+first*640,qs.h,(size_t)rows*640,m.cs);
+                                        }
+                                        if(qpn_batched) {
+                                            if(!qs.bx || !qs.bh || !qs.bgu || !qs.by) {
+                                                err="experimental QPN batched buffers absent";
+                                                return false;
                                             }
-                                            strata::kernels::qpn::projection(
-                                                wd,qs.h,m.Dm+first*N,(int)N,640,rows,schedule,m.cs);
+                                            // Existing group-exclusive MMQ ownership:
+                                            // each routed row appears exactly once in
+                                            // m.bounds_dev[j0..j0+ngx]. Bounds are absolute,
+                                            // and the packer zeros all rows >= its real count.
+                                            strata::kernels::qpn::ragged_gather_half(
+                                                m.mixed_h,m.src_dev,m.bounds_dev+j0,qs.bx,
+                                                ngx,(int)T,(int)(T*K),m.cs);
+                                            strata::kernels::qpn::projection_batch(
+                                                m.grp_gu,mmq_gub,qs.bx,qs.bgu,
+                                                ngx,1280,(int)N,32,schedule,m.cs);
+                                            strata::kernels::qpn::ragged_swiglu_stage_half(
+                                                qs.bgu,m.grp_tail,qs.bh,ngx,m.cs);
+                                            strata::kernels::qpn::projection_batch(
+                                                m.grp_d,mmq_db,qs.bh,qs.by,
+                                                ngx,(int)N,640,32,schedule,m.cs);
+                                            // Only the genuine (unpadded) expert rows
+                                            // are published to the model output.
+                                            strata::kernels::qpn::ragged_scatter_f32(
+                                                qs.by,m.bounds_dev+j0,m.Dm,
+                                                ngx,(int)(T*K),m.cs);
+                                        } else {
+                                            // Existing original QPN and fused per-expert
+                                            // control are unchanged.
+                                            for(int i=0;i<ngx;i++) {
+                                                const int64_t first=m.bounds_host[j0+(size_t)i];
+                                                const int32_t rows=m.cnt[(size_t)order[j0+(size_t)i]];
+                                                const auto* wgu=m.grp_gu+(size_t)i*mmq_gub;
+                                                const auto* wd=m.grp_d+(size_t)i*mmq_db;
+                                                const float* scales=m.grp_tail+(size_t)i*4;
+                                                gather_rows16(m.mixed_h,m.src_dev+first,qs.x,rows,N,m.cs);
+                                                if (qpn_fused_gu) {
+                                                    strata::kernels::qpn::projection(
+                                                        wgu,qs.x,qs.gu,1280,(int)N,rows,schedule,m.cs);
+                                                    strata::kernels::qpn::swiglu_stage_half(
+                                                        qs.gu,scales,qs.h,rows,640,m.cs);
+                                                } else {
+                                                    strata::kernels::qpn::projection(
+                                                        wgu,qs.x,qs.gate,640,(int)N,rows,schedule,m.cs);
+                                                    strata::kernels::qpn::projection(
+                                                        wgu+mmq_gub/2,qs.x,qs.up,640,(int)N,rows,schedule,m.cs);
+                                                    strata::kernels::qpn::swiglu(
+                                                        qs.gate,qs.up,scales,m.H+first*640,(size_t)rows*640,m.cs);
+                                                    strata::kernels::qpn::stage_f32(
+                                                        m.H+first*640,qs.h,(size_t)rows*640,m.cs);
+                                                }
+                                                strata::kernels::qpn::projection(
+                                                    wd,qs.h,m.Dm+first*N,(int)N,640,rows,schedule,m.cs);
+                                            }
                                         }
                                         // As on the original NVFP4 W4A8 path, apply the down
                                         // scale in moe_combine, not twice in the projection.
