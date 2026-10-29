@@ -152,7 +152,7 @@ int main(int argc,char** argv)try{
         else throw std::invalid_argument("unknown argument");
     }
     if(wp.empty()||xp.empty()||cp.empty()||iterations<1||iterations>1000||rounds<1||rounds>50||
-       (qpn_min!=1&&qpn_min!=17))
+       (qpn_min!=1&&qpn_min!=17&&qpn_min!=33))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
@@ -161,10 +161,15 @@ int main(int argc,char** argv)try{
     // Reorder the SAME real groups and their exact routed rows for BOTH arms:
     // MMQ prefix (>32 and <=16) followed by the four 17..32 QPN candidates.
     // This is an offline layout of a verified private capture, not invented data.
-    if(qpn_min==17){
+    if(qpn_min==17 || qpn_min==33){
+        // A separately qualified experimental large-row policy. Never
+        // accept the >128 experts: keep those and all <=32 in MMQ.
+        const auto candidate=[&](int n) {
+            return qpn_min==17 ? n>=17&&n<=32 : n>=33&&n<=128;
+        };
         std::vector<int> order;
-        for(int i=0;i<E;i++)if(counts[i]>32||counts[i]<17)order.push_back(i);
-        for(int i=0;i<E;i++)if(counts[i]>=17&&counts[i]<=32)order.push_back(i);
+        for(int i=0;i<E;i++)if(!candidate(counts[i]))order.push_back(i);
+        for(int i=0;i<E;i++)if(candidate(counts[i]))order.push_back(i);
         if(order.size()!=E)throw std::runtime_error("group permutation misses experts");
         std::array<int,E+1> original{};
         for(int i=0;i<E;i++)original[i+1]=original[i]+counts[i];
@@ -182,13 +187,18 @@ int main(int argc,char** argv)try{
         if(next_row!=size_t(rows))throw std::runtime_error("reorder lost or duplicated rows");
         host_w.swap(new_w);host_x.swap(new_x);counts.swap(reordered);
     }
-    const int fallback_groups=qpn_min==17?12:6;
+    const int fallback_groups=(qpn_min==17||qpn_min==33)?12:6;
     std::array<int,E+1> bounds{};
     for(int i=0;i<E;i++)bounds[i+1]=bounds[i]+counts[i];
     const int fallback_rows=bounds[fallback_groups],small=rows-fallback_rows;
-    if((qpn_min==17&&(std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=17&&n<=32;})||
-       std::any_of(counts.begin()+12,counts.end(),[](int n){return n<17||n>32;}))))
-        throw std::runtime_error("nonuniform mixed partition broken");
+    if(qpn_min==17 &&
+       (std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=17&&n<=32;}) ||
+        std::any_of(counts.begin()+12,counts.end(),[](int n){return n<17||n>32;})))
+        throw std::runtime_error("17..32 mixed partition broken");
+    if(qpn_min==33 &&
+       (std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=33&&n<=128;}) ||
+        std::any_of(counts.begin()+12,counts.end(),[](int n){return n<33||n>128;})))
+        throw std::runtime_error("33..128 mixed partition broken");
     std::vector<float> x(size_t(rows)*N);
     std::memcpy(x.data(),host_x.data(),host_x.size());
     for(float v:x)if(!std::isfinite(v)||std::abs(v)>65504.f)
