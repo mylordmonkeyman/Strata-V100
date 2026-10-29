@@ -934,21 +934,23 @@ struct PinnedUpload {
 struct QpnPrefillScratch {
     std::uint16_t* x=nullptr;
     std::uint16_t* h=nullptr;
-    float *gate=nullptr, *up=nullptr;
+    float *gate=nullptr, *up=nullptr, *gu=nullptr;
     ~QpnPrefillScratch() { release(); }
     void release() {
         if (x) cudaFree(x);
         if (h) cudaFree(h);
         if (gate) cudaFree(gate);
         if (up) cudaFree(up);
-        x=h=nullptr;gate=up=nullptr;
+        if (gu) cudaFree(gu);
+        x=h=nullptr;gate=up=gu=nullptr;
     }
     bool allocate() {
         constexpr std::size_t t=32, n=2560, ff=640;
         if (cudaMalloc(reinterpret_cast<void**>(&x), t*n*2)!=cudaSuccess ||
             cudaMalloc(reinterpret_cast<void**>(&h), t*ff*2)!=cudaSuccess ||
             cudaMalloc(reinterpret_cast<void**>(&gate),t*ff*4)!=cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void**>(&up),t*ff*4)!=cudaSuccess) {
+            cudaMalloc(reinterpret_cast<void**>(&up),t*ff*4)!=cudaSuccess ||
+            cudaMalloc(reinterpret_cast<void**>(&gu),t*ff*2*4)!=cudaSuccess) {
             (void) cudaGetLastError();
             release();
             return false;
@@ -4287,6 +4289,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // permute its experts without changing that ownership protocol.
                         const bool qpn_execute=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL"));
                         const bool qpn_plan_only=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_PLAN_CONTROL"));
+                        const bool qpn_fused_gu=qpn_execute &&
+                            detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_FUSED_GU"));
                         // Explicit matched-order MMQ control partitions routes but
                         // never invokes QPN. Both knobs are off by default.
                         if ((qpn_execute || qpn_plan_only) &&
@@ -5168,14 +5172,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                             // Gather one expert's original routing-order FP16
                                             // inputs. No fabricated / repeated token positions.
                                             gather_rows16(m.mixed_h,m.src_dev+first,qs.x,rows,N,m.cs);
-                                            strata::kernels::qpn::projection(
-                                                wgu,qs.x,qs.gate,640,(int)N,rows,schedule,m.cs);
-                                            strata::kernels::qpn::projection(
-                                                wgu+mmq_gub/2,qs.x,qs.up,640,(int)N,rows,schedule,m.cs);
-                                            strata::kernels::qpn::swiglu(
-                                                qs.gate,qs.up,scales,m.H+first*640,(size_t)rows*640,m.cs);
-                                            strata::kernels::qpn::stage_f32(
-                                                m.H+first*640,qs.h,(size_t)rows*640,m.cs);
+                                            if (qpn_fused_gu) {
+                                                // Same contiguous GGUF gate/up rows, now
+                                                // in one 1280-output projection. The new
+                                                // fused SwiGLU emits FP16 hidden directly:
+                                                // two fewer CUDA launches per expert.
+                                                strata::kernels::qpn::projection(
+                                                    wgu,qs.x,qs.gu,1280,(int)N,rows,schedule,m.cs);
+                                                strata::kernels::qpn::swiglu_stage_half(
+                                                    qs.gu,scales,qs.h,rows,640,m.cs);
+                                            } else {
+                                                // Keep unfused QPN for matched A/B.
+                                                strata::kernels::qpn::projection(
+                                                    wgu,qs.x,qs.gate,640,(int)N,rows,schedule,m.cs);
+                                                strata::kernels::qpn::projection(
+                                                    wgu+mmq_gub/2,qs.x,qs.up,640,(int)N,rows,schedule,m.cs);
+                                                strata::kernels::qpn::swiglu(
+                                                    qs.gate,qs.up,scales,m.H+first*640,(size_t)rows*640,m.cs);
+                                                strata::kernels::qpn::stage_f32(
+                                                    m.H+first*640,qs.h,(size_t)rows*640,m.cs);
+                                            }
                                             strata::kernels::qpn::projection(
                                                 wd,qs.h,m.Dm+first*N,(int)N,640,rows,schedule,m.cs);
                                         }
