@@ -62,7 +62,7 @@ for min in 1 17; do
     "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
     --qpn-min "$min" --rounds 1 --iterations 1 --graph-check \
     > "qpn-mixed-gpu-results/racecheck-measurement-min${min}.json"
-  grep -q 'ERROR SUMMARY: 0 errors' "qpn-mixed-gpu-results/racecheck-min${min}.log"
+  grep -Eq 'RACECHECK SUMMARY: 0 hazards displayed \(0 errors, 0 warnings\)' "qpn-mixed-gpu-results/racecheck-min${min}.log"
   "$py" -m json.tool "qpn-mixed-gpu-results/racecheck-measurement-min${min}.json" >/dev/null
 done
 echo 'GPU real mixed-group parity, graph, memcheck and racecheck gates passed.'
