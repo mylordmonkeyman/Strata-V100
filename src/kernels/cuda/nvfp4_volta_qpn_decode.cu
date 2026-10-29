@@ -108,6 +108,29 @@ void projection_batch(const std::uint8_t* w, std::size_t weight_stride, const st
     else launch_split<4>(w, x, y, n, k, t, s,groups,weight_stride,cs);
     check();
 }
+void projection_chunkmajor_batch(const std::uint8_t* w, std::size_t stride,
+                                 const std::uint16_t* x, float* y,
+                                 int groups, int n, int k, int t, Schedule s, void* stream) {
+    if (!w || !x || !y || !supported(70,n,k,t,s) || groups<1 || groups>65535 ||
+        s.split_k!=4 || s.accumulators!=1 || s.decoder!=1 ||
+        (reinterpret_cast<std::uintptr_t>(w)&3u) ||
+        (reinterpret_cast<std::uintptr_t>(x)&15u) ||
+        (reinterpret_cast<std::uintptr_t>(y)&3u) ||
+        (stride&3u) || (groups>1 && stride<std::size_t(n)*k/64*36))
+        throw std::invalid_argument("unsupported chunkmajor diagnostic projection");
+    const int tile=s.token_tile?s.token_tile:(t<=8?8:t<=16?16:32);
+    const cudaStream_t cs=static_cast<cudaStream_t>(stream);
+    if(tile==8)
+        detail::nvfp4_volta_qpn_gemm_kernel<1,4,1,true,true>
+            <<<dim3(n/32,groups,(t+7)/8),128,0,cs>>>(
+                w,reinterpret_cast<const half*>(x),n,k,t,y,stride);
+    else if(tile==16)
+        detail::nvfp4_volta_qpn_gemm_kernel<2,4,1,true,true>
+            <<<dim3(n/32,groups,(t+15)/16),128,0,cs>>>(
+                w,reinterpret_cast<const half*>(x),n,k,t,y,stride);
+    else throw std::invalid_argument("chunkmajor accepts only 8/16-row tiles");
+    check();
+}
 void stage_f32(const float* input, std::uint16_t* output, std::size_t count, void* stream) {
     stage_kernel<false><<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(
         input, reinterpret_cast<half*>(output), count); check();

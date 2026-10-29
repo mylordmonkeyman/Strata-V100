@@ -60,6 +60,12 @@ void projection(const std::uint8_t* weights, const std::uint16_t* x_half,
 void projection_batch(const std::uint8_t* weights, std::size_t weight_stride,
                       const std::uint16_t* x_half, float* output, int groups,
                       int n, int k, int tokens, Schedule schedule, void* stream);
+// Standalone diagnostic only: identical 36-byte compressed blocks, privately
+// rearranged [row][K chunk] -> [K chunk][row]. Never engine-dispatched.
+void projection_chunkmajor_batch(const std::uint8_t* w, std::size_t weight_stride,
+                                 const std::uint16_t* x_half, float* output,
+                                 int groups, int n, int k, int tokens,
+                                 Schedule schedule, void* stream);
 // Explicit input conversion; q8_1 is [half d, half sum, int8 qs[32]], 36 bytes.
 void stage_f32(const float* input, std::uint16_t* output, std::size_t count, void* stream);
 void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, void* stream);

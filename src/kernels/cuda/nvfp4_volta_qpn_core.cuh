@@ -55,7 +55,7 @@ __device__ __forceinline__ void volta_mma_qp_n(float (&d)[8], unsigned a0, unsig
                    "+f"(d[6]), "+f"(d[7])
                  : "r"(a0), "r"(a1), "r"(b0), "r"(b1));
 }
-template <int kTiles, int SPLITK, int NACC, bool Fast>
+template <int kTiles, int SPLITK, int NACC, bool Fast, bool ChunkMajor = false>
 __global__ __launch_bounds__(
     SPLITK * 32, (kTiles == 1 ? 32 : kTiles == 2 ? 16 : 4) / SPLITK < 1
         ? 1
@@ -103,7 +103,11 @@ __global__ __launch_bounds__(
     }
 
     for (int st = st0; st < stend; ++st) {
-        const std::uint8_t* block = wrow + static_cast<std::int64_t>(st) * 36;
+        // Diagnostic transposed compressed layout. Existing kernels retain the
+        // original compile-time-specialized GGUF row-major addressing.
+        const std::uint8_t* block = ChunkMajor ?
+            weights + (std::size_t(st)*n + std::size_t(use_col))*36 :
+            wrow + static_cast<std::int64_t>(st) * 36;
 #pragma unroll
         for (int g = 0; g < 4; ++g) {
             // Each 16-value sub-block has eight bytes: low nibbles k0..7,
