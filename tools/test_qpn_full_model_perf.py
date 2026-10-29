@@ -13,6 +13,12 @@ class PerformanceFirstABTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ab_modes(True,True)
 
+    def test_batched_vs_mmq_ab(self):
+        self.assertEqual(ab_modes(False,False,True),
+                         ("mmq","qpn-batched","qpn-batched","mmq"))
+        with self.assertRaises(ValueError):
+            ab_modes(False,True,True)
+
     def test_strict_gate_remains_default(self):
         a=[{"kl_base_vs_candidate":0.0314,"argmax_match":True}]
         self.assertEqual(classify_quality(a,False),("failed_first_logits_quality",False))

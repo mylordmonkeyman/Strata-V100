@@ -112,9 +112,11 @@ def read_summary(log):
             'qpn_groups':sum(int(g[1]) for g in execution),
             'qpn_experts':sum(int(g[2]) for g in execution),
             'error_lines':sum("error" in line.lower() for line in text.splitlines())}
-def ab_modes(fusion_ab, batched_ab=False):
-    if fusion_ab and batched_ab:
-        raise ValueError("--fusion-ab and --batched-ab are mutually exclusive")
+def ab_modes(fusion_ab, batched_ab=False, batched_mmq_ab=False):
+    if sum((bool(fusion_ab),bool(batched_ab),bool(batched_mmq_ab)))>1:
+        raise ValueError("ABBA control modes are mutually exclusive")
+    if batched_mmq_ab:
+        return ("mmq", "qpn-batched", "qpn-batched", "mmq")
     if batched_ab:
         return ("qpn-fused", "qpn-batched", "qpn-batched", "qpn-fused")
     return ("qpn-base", "qpn-fused", "qpn-fused", "qpn-base") if fusion_ab else ("mmq", "qpn-fused", "qpn-fused", "mmq")
@@ -138,6 +140,8 @@ def main():
                    help="A=original QPN, B=fused per-expert QPN")
     choices.add_argument("--batched-ab",action="store_true",
                    help="A=fused per-expert QPN, B=grouped padded QPN")
+    choices.add_argument("--batched-mmq-ab",action="store_true",
+                   help="A=original MMQ fallback, B=grouped QPN (both using matched route plan)")
     p.add_argument("--performance-only",action="store_true",
                    help="record first-logit KL and top-1, but do not fail A/B solely on model-quality threshold")
     a=p.parse_args()
@@ -163,7 +167,7 @@ def main():
          "--expert-cache","auto","--expert-profile",str(a.source/"data/expert-profile.bin"),
          "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","2",
          "--suffix-draft","0","--adapt-every","0","--vram-reserve-mib","1536","--stats"]
-    modes=ab_modes(a.fusion_ab,a.batched_ab)
+    modes=ab_modes(a.fusion_ab,a.batched_ab,a.batched_mmq_ab)
     summary={'schema':2,'scope':'performance-focused staged 768-row full-model ABBA; not default 1024 stream-all path',
              'control_mode':modes[0],'candidate_mode':modes[1],
              'performance_only':a.performance_only,'numerical_quality_qualified':False,
