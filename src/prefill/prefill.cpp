@@ -6,6 +6,10 @@
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
 #endif
 #include "mmq_resident_sort.hpp"
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+#include "strata/prefill/qpn_experiment_policy.hpp"
+#include "strata/kernels/nvfp4_volta_qpn.hpp"
+#endif
 #include "wmma_gemm.h"
 #include "strata/core/mtp.hpp"
 #include "strata/core/pinned_ring.hpp"
@@ -923,6 +927,35 @@ struct PinnedUpload {
     }
 };
 
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+// Small, per-stage opt-in scratch.  The default engine never instantiates
+// it, even when built with QPN.  No cache slot or model-pack is altered.
+struct QpnPrefillScratch {
+    std::uint16_t* x=nullptr;
+    std::uint16_t* h=nullptr;
+    float *gate=nullptr, *up=nullptr;
+    ~QpnPrefillScratch() { release(); }
+    void release() {
+        if (x) cudaFree(x);
+        if (h) cudaFree(h);
+        if (gate) cudaFree(gate);
+        if (up) cudaFree(up);
+        x=h=nullptr;gate=up=nullptr;
+    }
+    bool allocate() {
+        constexpr std::size_t t=32, n=2560, ff=640;
+        if (cudaMalloc(reinterpret_cast<void**>(&x), t*n*2)!=cudaSuccess ||
+            cudaMalloc(reinterpret_cast<void**>(&h), t*ff*2)!=cudaSuccess ||
+            cudaMalloc(reinterpret_cast<void**>(&gate),t*ff*4)!=cudaSuccess ||
+            cudaMalloc(reinterpret_cast<void**>(&up),t*ff*4)!=cudaSuccess) {
+            (void) cudaGetLastError();
+            release();
+            return false;
+        }
+        return true;
+    }
+};
+#endif
 struct Prefill::Impl {
     const core::WeightTable* wt = nullptr;
     const core::ModelGeometry* g = nullptr;
@@ -977,6 +1010,9 @@ struct Prefill::Impl {
     float* row_sd = nullptr;          // NVFP4 in MMQ: each Dm row's s_down, applied by the combine as it reads the row
     std::vector<int32_t> bounds_host;
     std::unique_ptr<mmq::Context> mmq_ctx;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+    std::unique_ptr<QpnPrefillScratch> qpn_scratch;
+#endif
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
     // set_cpu_pool: a small chunk's CPU experts. The layer's MoE input (T x N, from `mixed`), the rows the pool writes
     // (Dm's tail, in Dm's row order), ones for row_sd (the CPU's rows carry s_down already), all pinned; and the
@@ -4240,6 +4276,67 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 m.g->n_expert, stream_all, !stream_all || seq_start[(size_t) l] == seq_start[(size_t) l + 1]))
                             detail::mmq_resident_sort_rows(ids_h, T * K, (int32_t) K, m.cnt, m.off, order, slot_h, src_h,
                                                            detail::mmq_resident_sort_span(order.size(), MMQ_GROUP, sort_full));
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                        // Full-model experiment: no default behavior changes. Only the staged,
+                        // single-device, pure native NVFP4 W4A8 route is currently eligible.
+                        // Stream-all uses a separate ordered asynchronous blob issuer; never
+                        // permute its experts without changing that ownership protocol.
+                        bool qpn_layer = false;
+                        if (detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL")) &&
+                            !stream_all && !fused_l && !compact_l && use_mmq &&
+                            lay.native && !had_gu && !had_d &&
+                            mmq_gt == (int) GGML_TYPE_NVFP4 && mmq_dt == (int) GGML_TYPE_NVFP4 &&
+                            !mmq::fp4_activations(mmq_gt) &&
+                            !mmq_plan().direct[(size_t) l] &&
+                            !detail::mmq_resident_sort_requested() &&
+                            !detail::mmq_group_sort_requested() &&
+                            m.mixed_h && m.grp_tail && m.row_sd && m.cache &&
+                            on_peer.empty() && on_cpu.empty() && !m.pp) {
+                            int device=0;
+                            cudaDeviceProp props{};
+                            if (cudaGetDevice(&device)!=cudaSuccess ||
+                                cudaGetDeviceProperties(&props,device)!=cudaSuccess ||
+                                props.major!=7 || props.minor!=0) {
+                                err="experimental QPN requires a single sm_70 CUDA device";
+                                return false;
+                            }
+                            try {
+                                qpn_layer=detail::qpn_partition_rows(
+                                    ids_h,(size_t)(T*K),(int32_t)K,m.cnt,m.off,
+                                    order,slot_h,src_h,MMQ_GROUP);
+                            } catch(const std::exception& ex) {
+                                err=std::string("experimental QPN routing invariant: ")+ex.what();
+                                return false;
+                            }
+                            if(qpn_layer && !m.qpn_scratch) {
+                                cudaStreamCaptureStatus capturing=cudaStreamCaptureStatusNone;
+                                if (cudaStreamIsCapturing(m.cs,&capturing)!=cudaSuccess ||
+                                    capturing!=cudaStreamCaptureStatusNone) {
+                                    err="experimental QPN cannot allocate scratch during CUDA Graph capture";
+                                    return false;
+                                }
+                                auto scratch=std::make_unique<QpnPrefillScratch>();
+                                if(!scratch->allocate()) {
+                                    err="experimental QPN scratch allocation failed (no fallback after changing route ownership)";
+                                    return false;
+                                }
+                                m.qpn_scratch=std::move(scratch);
+                            }
+                            if(qpn_layer) {
+                                int selected_groups=0,selected_experts=0;
+                                for(std::size_t j=0;j<order.size();j+=MMQ_GROUP) {
+                                    const std::size_t end=std::min(order.size(),j+(std::size_t)MMQ_GROUP);
+                                    if(detail::qpn_entire_group(order,j,end,m.cnt)) {
+                                        ++selected_groups;
+                                        selected_experts+=(int)(end-j);
+                                    }
+                                }
+                                std::fprintf(stderr,
+                                    "strata qpn-experiment: layer %lld staged groups=%d experts=%d route rows=17..32\n",
+                                    (long long)l,selected_groups,selected_experts);
+                            }
+                        }
+#endif
                         if (grp_mapped) {
                             copy_i32(m.slot_dev, m.grp_dev + m.grp_tk, T * K, m.cs);
                             copy_i32(m.src_dev, m.grp_dev + 2 * m.grp_tk, T * K, m.cs);
@@ -5021,6 +5118,66 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
                                         if (!stream_all) gg_released += (size_t) gg_nslots;   // the walk's pending
                                         gg_nslots = 0;
+                                    }
+                                    return true;
+                                }
+#endif
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                                if (qpn_layer &&
+                                    detail::qpn_entire_group(order,j0,j+ngx,m.cnt)) {
+                                    // All experts in this MMQ group have real 17..32-row
+                                    // activation spans. The preceding exact group gather
+                                    // copied immutable GGUF NVFP4 blocks and tail scales.
+                                    // The fallback MMQ remains untouched for other groups.
+                                    QpnPrefillScratch& qs=*m.qpn_scratch;
+                                    const strata::kernels::qpn::Schedule schedule{4,1,1,16};
+                                    if (ngx<=0 || nr<=0 || !m.grp_tail || !m.row_sd ||
+                                        mmq_gub!=2*640*2560/64*36 ||
+                                        mmq_db!=2560*640/64*36) {
+                                        err="experimental QPN encountered invalid group geometry";
+                                        return false;
+                                    }
+                                    try {
+                                        // GU is diagnostic-only on QPN-owned rows. Initialize
+                                        // it to a known finite value, never leave stale values.
+                                        if(cudaMemsetAsync(m.GU+r0*1280,0,(size_t)nr*1280*4,m.cs)!=cudaSuccess) {
+                                            err="experimental QPN GU output initialization failed";
+                                            return false;
+                                        }
+                                        for(int i=0;i<ngx;i++) {
+                                            const int64_t first=m.bounds_host[j0+(size_t)i];
+                                            const int32_t rows=m.cnt[(size_t)order[j0+(size_t)i]];
+                                            if(rows<17 || rows>32 ||
+                                               m.bounds_host[j0+(size_t)i+1]-first!=rows) {
+                                                err="experimental QPN group row bounds inconsistent";
+                                                return false;
+                                            }
+                                            const auto* wgu=m.grp_gu+(size_t)i*mmq_gub;
+                                            const auto* wd=m.grp_d+(size_t)i*mmq_db;
+                                            const float* scales=m.grp_tail+(size_t)i*4;
+                                            // Gather one expert's original routing-order FP16
+                                            // inputs. No fabricated / repeated token positions.
+                                            gather_rows16(m.mixed_h,m.src_dev+first,qs.x,rows,N,m.cs);
+                                            strata::kernels::qpn::projection(
+                                                wgu,qs.x,qs.gate,640,(int)N,rows,schedule,m.cs);
+                                            strata::kernels::qpn::projection(
+                                                wgu+mmq_gub/2,qs.x,qs.up,640,(int)N,rows,schedule,m.cs);
+                                            strata::kernels::qpn::swiglu(
+                                                qs.gate,qs.up,scales,m.H+first*640,(size_t)rows*640,m.cs);
+                                            strata::kernels::qpn::stage_f32(
+                                                m.H+first*640,qs.h,(size_t)rows*640,m.cs);
+                                            strata::kernels::qpn::projection(
+                                                wd,qs.h,m.Dm+first*N,(int)N,640,rows,schedule,m.cs);
+                                        }
+                                        // As on the original NVFP4 W4A8 path, apply the down
+                                        // scale in moe_combine, not twice in the projection.
+                                        mmq::down_row_scales(
+                                            m.row_sd+r0,
+                                            m.bounds_dev+n+1+g*(GROUPS+1),
+                                            ngx,m.grp_tail,nr,m.cs);
+                                    } catch(const std::exception& ex) {
+                                        err=std::string("experimental QPN kernel failed: ")+ex.what();
+                                        return false;
                                     }
                                     return true;
                                 }
