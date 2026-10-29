@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <memory>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -137,11 +139,12 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false;
+    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
         if(flag=="--qpn-fused-gu"){fused_gu=true;continue;}
+        if(flag=="--qpn-chunkmajor"){chunkmajor=true;continue;}
         if(++i>=argc)throw std::invalid_argument("missing value");
         const std::string val=argv[i];
         if(flag=="--weights")wp=val;
@@ -158,7 +161,8 @@ int main(int argc,char** argv)try{
        (qpn_max!=128&&qpn_max!=512) ||
        (qpn_min==129&&qpn_max!=512) ||
        ((qpn_min==1||qpn_min==17)&&qpn_max!=128) ||
-       (fused_gu && (qpn_min!=129 || qpn_max!=512)))
+       (fused_gu && (qpn_min!=129 || qpn_max!=512)) ||
+       (chunkmajor && !fused_gu))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
@@ -230,6 +234,34 @@ int main(int argc,char** argv)try{
                              !q::supported(70,N,F,counts[i],{4,1,1,counts[i]>16?16:0}))
         throw std::runtime_error("QPN not qualified for selected small group");
     Stream stream;const auto s=stream.s;
+    // Experimental private chunk-major repack is intentionally prepared
+    // outside the timed expert forward; the repack cost is separately
+    // measured and cannot be ignored in model integration decisions.
+    double weight_pack_cpu_us=0,weight_pack_upload_us=0;
+    std::unique_ptr<Dev> packed_w;
+    if(chunkmajor) {
+        const auto begin=std::chrono::steady_clock::now();
+        std::vector<uint8_t> reordered_w=host_w;
+        auto repack_projection=[&](int expert,std::size_t mat_offset,int nrows,int kcols){
+            if(kcols%64)throw std::runtime_error("invalid NVFP4 repack K");
+            const int blocks=kcols/64;
+            const uint8_t* src=host_w.data()+std::size_t(expert)*STRIDE+mat_offset;
+            uint8_t* dst=reordered_w.data()+std::size_t(expert)*STRIDE+mat_offset;
+            for(int st=0;st<blocks;st++)for(int row=0;row<nrows;row++)
+                std::memcpy(dst+(std::size_t(st)*nrows+row)*36,
+                            src+(std::size_t(row)*blocks+st)*36,36);
+        };
+        for(int expert=fallback_groups;expert<E;expert++) {
+            repack_projection(expert,0,GU,N);
+            repack_projection(expert,2*MAT,N,F);
+        }
+        const auto packed=std::chrono::steady_clock::now();
+        packed_w=std::make_unique<Dev>(host_w.size());
+        packed_w->put(reordered_w.data(),reordered_w.size());
+        const auto uploaded=std::chrono::steady_clock::now();
+        weight_pack_cpu_us=std::chrono::duration<double,std::micro>(packed-begin).count();
+        weight_pack_upload_us=std::chrono::duration<double,std::micro>(uploaded-packed).count();
+    }
     Dev w(host_w.size()),input(host_x.size()),tail(scales.size()*4);
     Dev b(bounds.size()*4),ids(size_t(rows+512)*4),xh(size_t(rows)*N*2);
     Dev gate(size_t(rows)*F*4),up(size_t(rows)*F*4),hidden(size_t(rows)*F*4),hh(size_t(rows)*F*2);
@@ -284,11 +316,16 @@ int main(int argc,char** argv)try{
             auto* out=y.as<float>()+size_t(offset)*N;
             auto* sc=tail.as<float>()+i*4;
             if (fused_gu) {
-                // Same canonical contiguous GGUF gate+up expert weights,
-                // in one 1280-wide projection. Fused SwiGLU stages FP16,
-                // avoiding two launches per large selected expert.
-                q::projection(src,xv,gu.as<float>()+size_t(offset)*GU,
-                              GU,N,n,schedule,s);
+                // Both packed and native options perform one 1280-wide GU
+                // projection; the packed option changes only compressed
+                // block addresses and must pass the same numerical oracle.
+                if(chunkmajor)
+                    q::projection_chunkmajor_batch(
+                        packed_w->as<uint8_t>()+size_t(i)*STRIDE,0,xv,
+                        gu.as<float>()+size_t(offset)*GU,1,GU,N,n,schedule,s);
+                else
+                    q::projection(src,xv,gu.as<float>()+size_t(offset)*GU,
+                                  GU,N,n,schedule,s);
                 q::swiglu_stage_half(gu.as<float>()+size_t(offset)*GU,
                                      sc,hhalf,n,F,s);
             } else {
@@ -297,7 +334,12 @@ int main(int argc,char** argv)try{
                 q::swiglu(gv,uv,sc,hv,size_t(n)*F,s);
                 q::stage_f32(hv,hhalf,size_t(n)*F,s);
             }
-            q::projection(src+2*MAT,hhalf,out,N,F,n,schedule,s);
+            if(chunkmajor)
+                q::projection_chunkmajor_batch(
+                    packed_w->as<uint8_t>()+size_t(i)*STRIDE+2*MAT,0,hhalf,
+                    out,1,N,F,n,schedule,s);
+            else
+                q::projection(src+2*MAT,hhalf,out,N,F,n,schedule,s);
             q::scale_down(out,sc,size_t(n)*N,s);
         }
     };
@@ -385,8 +427,8 @@ int main(int argc,char** argv)try{
         check_canary();
     }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"routed_rows\":%d,",
-                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",weight_pack_cpu_us,weight_pack_upload_us,rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
     std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
