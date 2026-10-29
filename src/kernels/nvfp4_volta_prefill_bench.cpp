@@ -277,7 +277,7 @@ int main(int argc, char** argv) try {
         for (size_t j=0;j<arm.us.size();++j) std::printf("%s%.6f",j?",":"",arm.us[j]);
         std::printf("]}");
     }
-    std::printf("],\\\"graph_checked\\\":%s,\\\"graph_replay_equal\\\":%s,\\\"graph_changed_input_equal\\\":%s,\\\"output_tail_guard_ok\\\":%s}\\n",
+    std::printf("],\"graph_checked\":%s,\"graph_replay_equal\":%s,\"graph_changed_input_equal\":%s,\"output_tail_guard_ok\":%s}\n",
                 validate_graph?"true":"false",replay_equal?"true":"false",
                 changed_input_equal?"true":"false",output_guard_ok?"true":"false");
     return pass?0:1;
