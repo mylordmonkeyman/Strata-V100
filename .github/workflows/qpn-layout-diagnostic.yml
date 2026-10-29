@@ -1,0 +1,117 @@
+name: QPN V100 occupancy and NVFP4 compressed-layout diagnostics
+on:
+  push:
+    branches: ['qpn/mixed-route-bench']
+    paths:
+      - 'src/kernels/nvfp4_volta_layout_probe.cpp'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_core.cuh'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_decode.cu'
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
+      - 'cmake/volta_qpn.cmake'
+      - '.github/workflows/qpn-layout-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 100
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      QPN_FIXTURE: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40908922475
+          name: qpn-mixed-fixture-40908922475-1
+          path: pinned-mixed-summary
+      - name: Verify pinned private weights, build and profile six real experts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export CUDA_VISIBLE_DEVICES=0 CUDA_MODULE_LOADING=EAGER
+          mkdir -p qpn-layout-results
+          exec > >(tee qpn-layout-results/job.log) 2>&1
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader \
+            > qpn-layout-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-layout-results/processes-before.txt; then
+            echo 'GPU busy: refusing overlapping benchmark' >&2
+            exit 2
+          fi
+          py="$QPN_STATE_DIR/full-model/venv/bin/python"
+          "$py" tools/qpn_mixed_gpu_verify.py \
+            --private-dir "$QPN_FIXTURE" \
+            --published-summary pinned-mixed-summary/summary.json \
+            --out qpn-layout-results/provenance.json
+          build="$QPN_STATE_DIR/builds/qpn-mixed-route"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON
+          cmake --build "$build" --target nvfp4_volta_layout_probe -j 8
+          args=(--weights "$QPN_FIXTURE/weights.bin"
+                --activations "$QPN_FIXTURE/activations.f32"
+                --counts "$QPN_FIXTURE/counts.txt")
+          numactl --cpunodebind=0 --membind=0 \
+            "$build/nvfp4_volta_layout_probe" "${args[@]}" \
+            --rounds 6 --iterations 30 > qpn-layout-results/sweep.json
+          "$py" -m json.tool qpn-layout-results/sweep.json >/dev/null
+          command -v compute-sanitizer >/dev/null
+          for t in 4 24; do
+            numactl --cpunodebind=0 --membind=0 compute-sanitizer \
+              --tool memcheck --error-exitcode 98 --leak-check no \
+              --log-file "qpn-layout-results/memcheck-t${t}.log" \
+              "$build/nvfp4_volta_layout_probe" "${args[@]}" \
+              --only-tokens "$t" --rounds 1 --iterations 1 \
+              > "qpn-layout-results/memcheck-t${t}.json"
+            grep -q 'ERROR SUMMARY: 0 errors' "qpn-layout-results/memcheck-t${t}.log"
+            "$py" -m json.tool "qpn-layout-results/memcheck-t${t}.json" >/dev/null
+          done
+          # Counter probe is best-effort only: never grant GPU privileges.
+          if command -v ncu >/dev/null; then
+            ncu --version > qpn-layout-results/ncu-version.txt 2>&1 || true
+            if timeout 20 ncu --query-metrics 2>/dev/null | \
+                grep -q 'sm__pipe_tensor_cycles_active'; then
+              if timeout 120 ncu --csv \
+                  --kernel-name 'regex:.*nvfp4_volta_qpn_gemm_kernel.*' \
+                  --launch-count 14 \
+                  --metrics 'sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,dram__bytes_read.sum' \
+                  "$build/nvfp4_volta_layout_probe" "${args[@]}" \
+                  --only-tokens 4 --rounds 1 --iterations 1 --no-graph \
+                  > qpn-layout-results/ncu-sample.csv \
+                  2> qpn-layout-results/ncu-status.txt; then
+                echo 'Hardware counters collected' >> qpn-layout-results/ncu-status.txt
+              else
+                echo 'Counter permission/metric issue; no security settings changed' \
+                  >> qpn-layout-results/ncu-status.txt
+              fi
+            else
+              echo 'Selected tensor metric unavailable' > qpn-layout-results/ncu-status.txt
+            fi
+          else
+            echo 'Nsight Compute unavailable in existing runner' > qpn-layout-results/ncu-status.txt
+          fi
+          echo 'Four-arm real-expert layout/occupancy study passed.'
+      - name: Upload aggregate measurements and sanitizer/profiler status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-layout-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-layout-results/
+          if-no-files-found: warn
+          retention-days: 14
