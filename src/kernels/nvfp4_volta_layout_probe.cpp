@@ -242,10 +242,10 @@ int main(int argc,char** argv)try{
             const double serial_m=med(normal_times[0]),batched=med(normal_times[1]),packed_m=med(normal_times[2]),scalar_m=med(normal_times[3]);
             std::printf(",\"median_us\":{\"serial\":%.6f,\"batch\":%.6f,\"chunkmajor\":%.6f,\"scalar\":%.6f},",
                         serial_m,batched,packed_m,scalar_m);
-            std::printf("\"batch_speedup\":%.6f,\"layout_speedup\":%.6f,\"decoder_speedup\":%.6f,",
+            std::printf("\"batch_speedup\":%.6f,\"layout_speedup\":%.6f,\"decoder_speedup\":%.6f",
                         serial_m/batched,batched/packed_m,scalar_m/batched);
         }
-        std::printf("\"relative_l2\":{\"serial\":%.9g,\"batch\":%.9g,\"chunkmajor\":%.9g,\"scalar\":%.9g}",
+        std::printf(",\"relative_l2\":{\"serial\":%.9g,\"batch\":%.9g,\"chunkmajor\":%.9g,\"scalar\":%.9g}",
                     parity[0],parity[1],parity[2],parity[3]);
         if(!no_graph && rounds>=5){
             std::printf(",\"graph_median_us\":{\"serial\":%.6f,\"batch\":%.6f,\"chunkmajor\":%.6f,\"scalar\":%.6f}",
