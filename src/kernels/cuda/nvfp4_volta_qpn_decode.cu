@@ -69,9 +69,9 @@ void launch(const std::uint8_t* w, const std::uint16_t* x, float* y,
             int n, int k, int t, int decoder, int groups, std::size_t weight_stride, cudaStream_t stream) {
     // Only sm_70 code is emitted for this standalone library.
     if (decoder == 1)
-        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, true><<<dim3(n / 32,groups), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, true><<<dim3(n / 32,groups,(t+Tiles*8-1)/(Tiles*8)), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
     else
-        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, false><<<dim3(n / 32,groups), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, false><<<dim3(n / 32,groups,(t+Tiles*8-1)/(Tiles*8)), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
 }
 template<int Tiles, int Split>
 void launch_acc(const std::uint8_t* w, const std::uint16_t* x, float* y,
@@ -102,8 +102,9 @@ void projection_batch(const std::uint8_t* w, std::size_t weight_stride, const st
         (groups>1 && weight_stride<std::size_t(n)*k/64*36))
         throw std::invalid_argument("unsupported standalone NVFP4 QPN projection");
     auto cs = static_cast<cudaStream_t>(stream);
-    if (t <= 8) launch_split<1>(w, x, y, n, k, t, s,groups,weight_stride,cs);
-    else if (t <= 16) launch_split<2>(w, x, y, n, k, t, s,groups,weight_stride,cs);
+    const int tile_rows = s.token_tile ? s.token_tile : (t <= 8 ? 8 : t <= 16 ? 16 : 32);
+    if (tile_rows == 8) launch_split<1>(w, x, y, n, k, t, s,groups,weight_stride,cs);
+    else if (tile_rows == 16) launch_split<2>(w, x, y, n, k, t, s,groups,weight_stride,cs);
     else launch_split<4>(w, x, y, n, k, t, s,groups,weight_stride,cs);
     check();
 }

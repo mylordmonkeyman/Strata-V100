@@ -30,13 +30,21 @@ inline float weight_value(const std::uint8_t* row, int k) {
     return code_value(code) * scale_value(block[sub]);
 }
 
-struct Schedule { int split_k = 4; int accumulators = 1; int decoder = 0; };
+struct Schedule {
+    int split_k = 4;
+    int accumulators = 1;
+    int decoder = 0;
+    // 0 keeps the old 8/16/32-row schedule. Explicit row tiles use grid.z.
+    int token_tile = 0;
+};
 inline bool supported(int cc, int n, int k, int tokens, Schedule s) {
     return cc == 70 && n > 0 && n % 128 == 0 && k > 0 && k % 64 == 0 &&
            tokens >= 1 && tokens <= max_tokens &&
            (s.split_k == 4 || s.split_k == 8 || s.split_k == 16) &&
+           (s.token_tile == 0 || s.token_tile == 8 || s.token_tile == 16 || s.token_tile == 32) &&
            k / 64 >= s.split_k && (s.accumulators == 1 || s.accumulators == 2) && (s.decoder == 0 || s.decoder == 1) &&
-           s.split_k * ((tokens + 7) / 8 <= 1 ? 1 : tokens <= 16 ? 2 : 4) * 1024 <= 49152;
+           s.split_k * (s.token_tile ? s.token_tile / 8 :
+                        tokens <= 8 ? 1 : tokens <= 16 ? 2 : 4) * 1024 <= 49152;
 }
 
 // All pointers device-resident, caller-owned; stream is cudaStream_t as void*.

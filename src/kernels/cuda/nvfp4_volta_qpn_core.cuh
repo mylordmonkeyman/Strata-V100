@@ -66,6 +66,8 @@ __global__ __launch_bounds__(
     weights += std::size_t(blockIdx.y)*weight_stride;
     x += std::size_t(blockIdx.y)*t*k;
     output += std::size_t(blockIdx.y)*t*n;
+    // grid.z owns disjoint token rows; unchanged when one tile covers T.
+    const int row_base = int(blockIdx.z) * kTiles * S::kRowsPerTile;
 
     __shared__ float cs[SPLITK][kTiles * S::kRowsPerTile * S::kColsPerCta];
 
@@ -135,7 +137,7 @@ __global__ __launch_bounds__(
 
 #pragma unroll
             for (int tile = 0; tile < kTiles; ++tile) {
-                const int row = tile * S::kRowsPerTile + r;
+                const int row = row_base + tile * S::kRowsPerTile + r;
                 half2 a[8];
                 if (row < t) {
                     const half* xrow = x + static_cast<std::int64_t>(row) * k + kbase;
@@ -190,11 +192,11 @@ __global__ __launch_bounds__(
         const int row  = e / S::kColsPerCta;
         const int cl   = e % S::kColsPerCta;
         const int ocol = static_cast<int>(blockIdx.x) * S::kColsPerCta + cl;
-        if (row < t && ocol < n) {
+        if (row_base + row < t && ocol < n) {
             float v = 0.0f;
 #pragma unroll
             for (int w = 0; w < SPLITK; ++w) { v += cs[w][e]; }
-            output[static_cast<std::int64_t>(row) * n + ocol] = v;
+            output[static_cast<std::int64_t>(row_base + row) * n + ocol] = v;
         }
     }
 }
