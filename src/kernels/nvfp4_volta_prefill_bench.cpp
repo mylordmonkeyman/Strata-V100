@@ -77,13 +77,19 @@ int positive_integer(const char* value) {
 }
 } // namespace
 int main(int argc, char** argv) try {
-    std::string path, activation_path; int tokens = 8, iterations = 100;
+    std::string path, activation_path; int tokens = 8, iterations = 100, qpn_tile = 0;
     for (int i = 1; i < argc; ++i) {
         if (i+1 == argc) throw std::invalid_argument("option needs a value");
         const std::string a(argv[i]); const char* v = argv[++i];
         if (a == "--blob") path = v;
         else if (a == "--activations") activation_path = v;
         else if (a == "--tokens") tokens = positive_integer(v);
+        else if (a == "--qpn-tile") {
+            const std::string tile(v);
+            if (tile != "0" && tile != "8" && tile != "16" && tile != "32")
+                throw std::invalid_argument("--qpn-tile must be 0, 8, 16, or 32");
+            qpn_tile = std::stoi(tile);
+        }
         else if (a == "--iterations") iterations = positive_integer(v);
         else throw std::invalid_argument("unknown option: " + a);
     }
@@ -177,14 +183,16 @@ int main(int argc, char** argv) try {
         down.expert_bytes=L.up_off; down.xq=mmh.p; down.dst=y.as<float>(); down.ld_dst=N;
         mmq.run(down, s); m::scale_down_rows(y.as<float>(), N, bounds.as<int32_t>(), 1, scales, tokens, s);
     };
-    const bool qpn_ok = tokens <= 32;
+    const bool qpn_ok = tokens <= 32 &&
+        q::supported(70, FF, N, tokens, {4,1,1,qpn_tile}) &&
+        q::supported(70, N, FF, tokens, {4,1,1,qpn_tile});
     auto qpn_run = [&] {
         q::stage_f32(input.as<float>(), xh.as<uint16_t>(), x.size(), s);
-        q::projection(w.as<uint8_t>(), xh.as<uint16_t>(), gh.as<float>(), FF, N, tokens, {4,1,1}, s);
-        q::projection(w.as<uint8_t>()+L.up_off, xh.as<uint16_t>(), uh.as<float>(), FF, N, tokens, {4,1,1}, s);
+        q::projection(w.as<uint8_t>(), xh.as<uint16_t>(), gh.as<float>(), FF, N, tokens, {4,1,1,qpn_tile}, s);
+        q::projection(w.as<uint8_t>()+L.up_off, xh.as<uint16_t>(), uh.as<float>(), FF, N, tokens, {4,1,1,qpn_tile}, s);
         q::swiglu(gh.as<float>(), uh.as<float>(), scales, hidden.as<float>(), hr.size(), s);
         q::stage_f32(hidden.as<float>(), hh.as<uint16_t>(), hr.size(), s);
-        q::projection(w.as<uint8_t>()+L.down_off, hh.as<uint16_t>(), y.as<float>(), N, FF, tokens, {4,1,1}, s);
+        q::projection(w.as<uint8_t>()+L.down_off, hh.as<uint16_t>(), y.as<float>(), N, FF, tokens, {4,1,1,qpn_tile}, s);
         q::scale_down(y.as<float>(), scales, reference.size(), s);
     };
     std::vector<Arm> arms;
@@ -204,7 +212,7 @@ int main(int argc, char** argv) try {
         }
     cudaEventDestroy(a); cudaEventDestroy(b);
     bool pass=true;
-    std::printf("{\"tokens\":%d,\"fixture\":\"%s\",\"activation_source\":\"%s\",\"mmq_eligible\":%s,\"fp16_weight_bytes\":%zu,\"arms\":[",tokens,path.empty()?"synthetic":"real",activation_path.empty()?"gaussian":"captured",mmq_ok?"true":"false",(wg.size()+wu.size()+wd.size())*2);
+    std::printf("{\"tokens\":%d,\"qpn_tile\":%d,\"fixture\":\"%s\",\"activation_source\":\"%s\",\"mmq_eligible\":%s,\"fp16_weight_bytes\":%zu,\"arms\":[",tokens,qpn_tile,path.empty()?"synthetic":"real",activation_path.empty()?"gaussian":"captured",mmq_ok?"true":"false",(wg.size()+wu.size()+wd.size())*2);
     for (size_t i=0;i<arms.size();++i) {
         const auto& arm=arms[i]; if (arm.available && arm.error>.03) pass=false;
         std::printf("%s{\"backend\":\"%s\",\"available\":%s,\"expert_l2\":",i?",":"",arm.name,arm.available?"true":"false");
