@@ -20,9 +20,20 @@ namespace k = strata::kernels;
 namespace {
 void ck(cudaError_t e) { if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
 struct Device {
-    void* p = nullptr;
-    explicit Device(std::size_t bytes) { ck(cudaMalloc(&p, bytes)); }
-    ~Device() { if (p) cudaFree(p); }
+    void* p = nullptr; void* allocation = nullptr; std::size_t bytes = 0;
+    inline static std::vector<const Device*> live;
+    explicit Device(std::size_t n) : bytes(n) {
+        ck(cudaMalloc(&allocation,n+512)); ck(cudaMemset(allocation,0xa5,n+512));
+        p=static_cast<unsigned char*>(allocation)+256; live.push_back(this);
+    }
+    ~Device() { live.erase(std::find(live.begin(),live.end(),this)); cudaFree(allocation); }
+    static void check_all() {
+        unsigned char guard[256];
+        for (const auto* d : live) for (std::size_t offset : {std::size_t(0),d->bytes+256}) {
+            ck(cudaMemcpy(guard,static_cast<unsigned char*>(d->allocation)+offset,256,cudaMemcpyDeviceToHost));
+            for (unsigned char v : guard) if(v!=0xa5) throw std::runtime_error("device scratch/input guard overwritten");
+        }
+    }
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
     template<class T> T* as() const { return static_cast<T*>(p); }
@@ -87,8 +98,8 @@ int integer(const std::string& value) {
 } // namespace
 
 int main(int argc, char** argv) try {
-    std::string blob_path, activation_path;
-    int tokens = 8, iterations = 100, sk_gu = 4, sk_down = 4, acc = 1, decoder = 0;
+    std::string blob_path, activation_path, pattern="gaussian";
+    int tokens = 8, iterations = 100, sk_gu = 4, sk_down = 4, acc = 1, decoder = 0, groups = 1;
     bool input_q8 = false, hidden_q8 = false;
     for (int a = 1; a < argc; ++a) {
         const std::string arg = argv[a];
@@ -104,6 +115,8 @@ int main(int argc, char** argv) try {
         else if (arg == "--split-down") sk_down = integer(value);
         else if (arg == "--acc") acc = integer(value);
         else if (arg == "--decoder") decoder = integer(value);
+        else if (arg == "--groups") groups = integer(value);
+        else if (arg == "--pattern") pattern = value;
         else throw std::invalid_argument("unknown option: " + arg);
     }
     constexpr int N = 2560, FF = 640, guard = 64;
@@ -112,8 +125,10 @@ int main(int argc, char** argv) try {
     cudaDeviceProp prop{}; ck(cudaGetDeviceProperties(&prop, device));
     const int cc = prop.major * 10 + prop.minor;
     const q::Schedule gu{sk_gu, acc, decoder}, down{sk_down, acc, decoder};
-    if (!q::supported(cc, FF, N, tokens, gu) || !q::supported(cc, N, FF, tokens, down) || iterations < 1)
+    if (!q::supported(cc, FF, N, tokens, gu) || !q::supported(cc, N, FF, tokens, down) || iterations < 1 || groups<1 || groups>32)
         throw std::invalid_argument("requires sm_70, tokens 1..32 and valid projection-specific split/acc settings");
+    if (pattern!="gaussian" && pattern!="outliers") throw std::invalid_argument("pattern must be gaussian or outliers");
+    const int total=tokens*groups;
     std::fprintf(stderr, "device=%s tokens=%d fixture=%s input=%s hidden=%s\n", prop.name, tokens,
                  blob_path.empty() ? "synthetic (NOT model qualification)" : blob_path.c_str(),
                  input_q8 ? "Q8_1" : "FP32", hidden_q8 ? "Q8_1" : "FP32");
@@ -147,7 +162,7 @@ int main(int argc, char** argv) try {
     for (std::size_t r = 0; r < FF; ++r)
         for (int c = 0; c < N; ++c)
             if (q::weight_value(blob.data()+r*L.gu_row, c) != wg[r*N+c]) throw std::runtime_error("GGUF decoder disagrees with ggml");
-    const std::size_t nx = std::size_t(tokens)*N, nh = std::size_t(tokens)*FF;
+    const std::size_t nx = std::size_t(total)*N, nh = std::size_t(total)*FF;
     std::vector<float> x(nx);
     if (activation_path.empty()) {
         std::normal_distribution<float> normal;
@@ -156,22 +171,24 @@ int main(int argc, char** argv) try {
         std::ifstream f(activation_path, std::ios::binary);
         if (!f.read(reinterpret_cast<char*>(x.data()), x.size()*4)) throw std::runtime_error("activation file too short");
     }
+    if(pattern=="outliers") for(std::size_t i=0;i<x.size();i+=97) x[i]*=64;
     for (float v : x) if (!std::isfinite(v) || std::abs(v) > 65504) throw std::runtime_error("FP16 activation range");
     std::vector<double> xd(x.begin(), x.end());
-    auto rg = project(wg, xd, FF, N, tokens), ru = project(wu, xd, FF, N, tokens);
+    auto rg = project(wg, xd, FF, N, total), ru = project(wu, xd, FF, N, total);
     std::vector<double> rh(nh);
     for (std::size_t i = 0; i < nh; ++i) rh[i] = silu(rg[i]*tail[0]) * (ru[i]*tail[1]);
-    auto ry = project(wd, rh, N, FF, tokens);
+    auto ry = project(wd, rh, N, FF, total);
     for (auto& v : ry) v *= tail[2];
 
-    Device db(blob.size()), dx(nx*4), xq(nx/32*36), xhalf(nx*2), g(nh*4), u(nh*4), h(nh*4),
+    Device db(blob.size()*groups), dx(nx*4), xq(nx/32*36), xhalf(nx*2), g(nh*4), u(nh*4), h(nh*4),
            hq(nh/32*36), hhalf(nh*2), out((nx+2*guard)*4), legacy(nx*4),
-           scratch(k::native_expert_scratch_bytes(tokens, FF)), ptr(8), start(8), ng(4), ids(tokens*4);
-    db.put(blob.data(), blob.size()); dx.put(x.data(), nx*4);
-    const auto address = reinterpret_cast<unsigned long long>(db.p);
-    const int starts[2] = {0, tokens}, groups = 1;
-    std::vector<int> idx(tokens); for (int i = 0; i < tokens; ++i) idx[i] = i;
-    ptr.put(&address, 8); start.put(starts, 8); ng.put(&groups, 4); ids.put(idx.data(), tokens*4);
+           scratch(k::native_expert_scratch_bytes(total, FF)), ptr(groups*8), start((groups+1)*4), ng(4), ids(total*4);
+    for(int group=0;group<groups;++group) ck(cudaMemcpy(db.as<std::uint8_t>()+std::size_t(group)*L.bytes,blob.data(),blob.size(),cudaMemcpyHostToDevice));
+    dx.put(x.data(), nx*4);
+    std::vector<unsigned long long> addresses(groups); std::vector<int> starts(groups+1),idx(total);
+    for(int group=0;group<groups;++group) {addresses[group]=reinterpret_cast<unsigned long long>(db.as<std::uint8_t>()+std::size_t(group)*L.bytes); starts[group]=group*tokens;}
+    starts[groups]=total; for(int i=0;i<total;++i)idx[i]=i;
+    ptr.put(addresses.data(),groups*8); start.put(starts.data(),(groups+1)*4); ng.put(&groups,4); ids.put(idx.data(),total*4);
     Stream stream; const auto s = stream.s;
     Device probe(128*16*sizeof(float));
     q::decoder_probe(probe.as<float>(), s); ck(cudaStreamSynchronize(s));
@@ -190,24 +207,24 @@ int main(int argc, char** argv) try {
     }
     auto* y = out.as<float>() + guard;
     const auto* scales = reinterpret_cast<const float*>(db.as<std::uint8_t>() + L.tail_off);
-    auto quant_input = [&] { k::quantize_q8_1_rows(dx.as<float>(), tokens, N, xq.p, s); };
+    auto quant_input = [&] { k::quantize_q8_1_rows(dx.as<float>(), total, N, xq.p, s); };
     auto candidate = [&] {
         if (input_q8) { quant_input(); q::stage_q8_1(xq.p, xhalf.as<std::uint16_t>(), nx, s); }
         else q::stage_f32(dx.as<float>(), xhalf.as<std::uint16_t>(), nx, s);
-        q::projection(db.as<std::uint8_t>(), xhalf.as<std::uint16_t>(), g.as<float>(), FF, N, tokens, gu, s);
-        q::projection(db.as<std::uint8_t>() + L.up_off, xhalf.as<std::uint16_t>(), u.as<float>(), FF, N, tokens, gu, s);
+        q::projection_batch(db.as<std::uint8_t>(), L.bytes, xhalf.as<std::uint16_t>(), g.as<float>(), groups, FF, N, tokens, gu, s);
+        q::projection_batch(db.as<std::uint8_t>() + L.up_off, L.bytes, xhalf.as<std::uint16_t>(), u.as<float>(), groups, FF, N, tokens, gu, s);
         q::swiglu(g.as<float>(), u.as<float>(), scales, h.as<float>(), nh, s);
         if (hidden_q8) {
-            k::quantize_q8_1_rows(h.as<float>(), tokens, FF, hq.p, s);
+            k::quantize_q8_1_rows(h.as<float>(), total, FF, hq.p, s);
             q::stage_q8_1(hq.p, hhalf.as<std::uint16_t>(), nh, s);
         } else q::stage_f32(h.as<float>(), hhalf.as<std::uint16_t>(), nh, s);
-        q::projection(db.as<std::uint8_t>()+L.down_off, hhalf.as<std::uint16_t>(), y, N, FF, tokens, down, s);
+        q::projection_batch(db.as<std::uint8_t>()+L.down_off, L.bytes, hhalf.as<std::uint16_t>(), y, groups, N, FF, tokens, down, s);
         q::scale_down(y, scales, nx, s);
     };
     auto baseline = [&] {
         quant_input();
         k::native_expert_grouped(L, ptr.as<unsigned long long>(), start.as<int>(), ng.as<int>(), ids.as<int>(),
-                                 ids.as<int>(), 1, tokens, xq.p, scratch.p, legacy.as<float>(), s);
+                                 ids.as<int>(), groups, total, xq.p, scratch.p, legacy.as<float>(), s);
     };
     std::vector<float> guarded(nx+2*guard, sentinel); out.put(guarded.data(), guarded.size()*4);
     candidate(); baseline(); ck(cudaStreamSynchronize(s));
@@ -217,13 +234,13 @@ int main(int argc, char** argv) try {
     // Down isolation: compare against the actual FP32 hidden, before its staging,
     // to distinguish propagated gate/up error from down conversion/accumulation.
     const auto actual_h = download(h.as<float>(), nh);
-    const auto rd = project(wd, std::vector<double>(actual_h.begin(), actual_h.end()), N, FF, tokens);
+    const auto rd = project(wd, std::vector<double>(actual_h.begin(), actual_h.end()), N, FF, total);
     auto scaled_rd = rd; for (auto& v : scaled_rd) v *= tail[2];
     const Error ed = error(got, scaled_rd);
     const auto staged_x = download_half(xhalf, nx), staged_h = download_half(hhalf, nh);
-    const Error eg_mma = error(download(g.as<float>(), nh), project(wg, staged_x, FF, N, tokens)),
-                eu_mma = error(download(u.as<float>(), nh), project(wu, staged_x, FF, N, tokens));
-    auto down_control = project(wd, staged_h, N, FF, tokens);
+    const Error eg_mma = error(download(g.as<float>(), nh), project(wg, staged_x, FF, N, total)),
+                eu_mma = error(download(u.as<float>(), nh), project(wu, staged_x, FF, N, total));
+    auto down_control = project(wd, staged_h, N, FF, total);
     for (auto& v : down_control) v *= tail[2];
     const Error ed_mma = error(got, down_control);
     const Error input_rounding = error(std::vector<float>(staged_x.begin(), staged_x.end()), xd),
@@ -238,6 +255,15 @@ int main(int argc, char** argv) try {
     ck(cudaMemsetAsync(y, 0xff, nx*4, s)); ck(cudaGraphLaunch(graph.exec, s)); ck(cudaStreamSynchronize(s));
     const auto replay = download(y, nx);
     if (std::memcmp(replay.data(), got.data(), nx*4)) throw std::runtime_error("graph replay differs");
+    auto changed_x=x; for(auto& v:changed_x)v*=.5f;
+    dx.put(changed_x.data(),nx*4); candidate(); ck(cudaStreamSynchronize(s));
+    const auto changed_reference=download(y,nx);
+    ck(cudaMemsetAsync(y,0xff,nx*4,s)); ck(cudaGraphLaunch(graph.exec,s)); ck(cudaStreamSynchronize(s));
+    const auto changed_replay=download(y,nx);
+    if(std::memcmp(changed_reference.data(),changed_replay.data(),nx*4)) throw std::runtime_error("graph changed-input replay differs");
+    if(std::any_of(got.begin(),got.end(),[](float v){return v!=0;}) && !std::memcmp(got.data(),changed_replay.data(),nx*4)) throw std::runtime_error("graph ignores changed input");
+    dx.put(x.data(),nx*4); candidate(); ck(cudaStreamSynchronize(s));
+    Device::check_all();
     guarded = download(out.as<float>(), nx+2*guard);
     for (int i = 0; i < guard; ++i)
         if (guarded[i] != sentinel || guarded[guard+nx+i] != sentinel) throw std::runtime_error("output guard overwritten");
@@ -252,14 +278,15 @@ int main(int argc, char** argv) try {
     double times[2][6];
     for (int rep = 0; rep < 6; ++rep)
         for (int arm = 0; arm < 2; ++arm) { const int which = (rep+arm)%2; times[which][rep] = timed(which == 1); }
+    Device::check_all();
     const bool pass = eg.l2 <= .02 && eu.l2 <= .02 && ed.l2 <= .02 && ey.l2 <= .03;
-    std::printf("{\"tokens\":%d,\"fixture\":\"%s\",\"input_q8\":%s,\"hidden_q8\":%s,"
+    std::printf("{\"groups\":%d,\"weight_working_set_bytes\":%zu,\"pattern\":\"%s\",\"tokens\":%d,\"fixture\":\"%s\",\"input_q8\":%s,\"hidden_q8\":%s,"
                 "\"split_gu\":%d,\"split_down\":%d,\"acc\":%d,\"iterations\":%d,\"decoder\":%d,"
                 "\"gate_l2\":%.9g,\"up_l2\":%.9g,\"down_l2\":%.9g,\"expert_l2\":%.9g,\"baseline_l2\":%.9g,"
                 "\"input_staging_l2\":%.9g,\"hidden_staging_l2\":%.9g,"
                 "\"gate_mma_l2\":%.9g,\"up_mma_l2\":%.9g,\"down_mma_l2\":%.9g,"
-                "\"expert_max_abs\":%.9g,\"graph_replay_equal\":true,\"output_guards_ok\":true,\"numerics_pass\":%s,",
-                tokens, blob_path.empty() ? "synthetic" : "real", input_q8 ? "true" : "false", hidden_q8 ? "true" : "false",
+                "\"expert_max_abs\":%.9g,\"graph_replay_equal\":true,\"graph_changed_input_equal\":true,\"scratch_guards_ok\":true,\"output_guards_ok\":true,\"numerics_pass\":%s,",
+                groups, blob.size()*groups, pattern.c_str(), tokens, blob_path.empty() ? "synthetic" : "real", input_q8 ? "true" : "false", hidden_q8 ? "true" : "false",
                 sk_gu, sk_down, acc, iterations, decoder, eg.l2, eu.l2, ed.l2, ey.l2, eb.l2,
                 input_rounding.l2, hidden_rounding.l2, eg_mma.l2, eu_mma.l2, ed_mma.l2,
                 ey.maximum, pass ? "true" : "false");

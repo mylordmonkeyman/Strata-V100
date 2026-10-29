@@ -1,0 +1,9 @@
+{
+  "candidates": 120,
+  "passed": 120,
+  "failed": 0,
+  "best_completed_expert_speedup": 0.8634680043094768,
+  "decode_gate": "pending mixed-group/real-activation/model/hardware qualification",
+  "prefill_gate": "pending NVFP4 MMQ and scaled FP16 crossover plus end-to-end TTFT",
+  "engine_dispatch": "unchanged; standalone tools only"
+}

@@ -66,38 +66,45 @@ __global__ void pair_probe_kernel(float* output) {
 }
 template<int Tiles, int Split, int Acc>
 void launch(const std::uint8_t* w, const std::uint16_t* x, float* y,
-            int n, int k, int t, int decoder, cudaStream_t stream) {
+            int n, int k, int t, int decoder, int groups, std::size_t weight_stride, cudaStream_t stream) {
     // Only sm_70 code is emitted for this standalone library.
     if (decoder == 1)
-        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, true><<<n / 32, Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y);
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, true><<<dim3(n / 32,groups), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
     else
-        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, false><<<n / 32, Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y);
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, false><<<dim3(n / 32,groups), Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y,weight_stride);
 }
 template<int Tiles, int Split>
 void launch_acc(const std::uint8_t* w, const std::uint16_t* x, float* y,
-                int n, int k, int t, Schedule s, cudaStream_t stream) {
-    if (s.accumulators == 1) launch<Tiles, Split, 1>(w, x, y, n, k, t, s.decoder, stream);
-    else launch<Tiles, Split, 2>(w, x, y, n, k, t, s.decoder, stream);
+                int n, int k, int t, Schedule s, int groups, std::size_t weight_stride, cudaStream_t stream) {
+    if (s.accumulators == 1) launch<Tiles, Split, 1>(w, x, y, n, k, t, s.decoder,groups,weight_stride,stream);
+    else launch<Tiles, Split, 2>(w, x, y, n, k, t, s.decoder,groups,weight_stride,stream);
 }
 template<int Tiles>
 void launch_split(const std::uint8_t* w, const std::uint16_t* x, float* y,
-                  int n, int k, int t, Schedule s, cudaStream_t stream) {
-    if (s.split_k == 4) launch_acc<Tiles, 4>(w, x, y, n, k, t, s, stream);
-    else if (s.split_k == 8) launch_acc<Tiles, 8>(w, x, y, n, k, t, s, stream);
+                  int n, int k, int t, Schedule s, int groups, std::size_t weight_stride, cudaStream_t stream) {
+    if (s.split_k == 4) launch_acc<Tiles, 4>(w, x, y, n, k, t, s,groups,weight_stride,stream);
+    else if (s.split_k == 8) launch_acc<Tiles, 8>(w, x, y, n, k, t, s,groups,weight_stride,stream);
     else {
         // 16 warps * 4 tiles needs 64 KiB static shared memory: never instantiate.
-        if constexpr (Tiles < 4) launch_acc<Tiles, 16>(w, x, y, n, k, t, s, stream);
+        if constexpr (Tiles < 4) launch_acc<Tiles, 16>(w, x, y, n, k, t, s,groups,weight_stride,stream);
     }
 }
 } // namespace
 void projection(const std::uint8_t* w, const std::uint16_t* x, float* y,
                 int n, int k, int t, Schedule s, void* stream) {
-    if (!w || !x || !y || !supported(70, n, k, t, s))
+    projection_batch(w,0,x,y,1,n,k,t,s,stream);
+}
+void projection_batch(const std::uint8_t* w, std::size_t weight_stride, const std::uint16_t* x, float* y,
+                      int groups, int n, int k, int t, Schedule s, void* stream) {
+    if (!w || !x || !y || !supported(70, n, k, t, s) || groups<1 || groups>65535 ||
+        (reinterpret_cast<std::uintptr_t>(w)&3u) || (reinterpret_cast<std::uintptr_t>(x)&15u) ||
+        (reinterpret_cast<std::uintptr_t>(y)&3u) || (weight_stride&3u) ||
+        (groups>1 && weight_stride<std::size_t(n)*k/64*36))
         throw std::invalid_argument("unsupported standalone NVFP4 QPN projection");
     auto cs = static_cast<cudaStream_t>(stream);
-    if (t <= 8) launch_split<1>(w, x, y, n, k, t, s, cs);
-    else if (t <= 16) launch_split<2>(w, x, y, n, k, t, s, cs);
-    else launch_split<4>(w, x, y, n, k, t, s, cs);
+    if (t <= 8) launch_split<1>(w, x, y, n, k, t, s,groups,weight_stride,cs);
+    else if (t <= 16) launch_split<2>(w, x, y, n, k, t, s,groups,weight_stride,cs);
+    else launch_split<4>(w, x, y, n, k, t, s,groups,weight_stride,cs);
     check();
 }
 void stage_f32(const float* input, std::uint16_t* output, std::size_t count, void* stream) {

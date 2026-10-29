@@ -53,6 +53,9 @@ if grep -Eq '^[[:space:]]*[0-9]+,' "$report_dir/processes-before.txt"; then
 fi
 numactl --cpunodebind=0 --membind=0 true
 git rev-parse HEAD > "$report_dir/commit.txt"
+df -h "$(pwd)" "$QPN_STATE_DIR" > "$report_dir/filesystem.txt"
+free -h > "$report_dir/memory.txt"
+if [[ -r /sys/fs/cgroup/memory.max ]]; then cat /sys/fs/cgroup/memory.max > "$report_dir/cgroup-memory-max.txt"; fi
 cmake --version > "$report_dir/cmake.txt"
 c++ --version > "$report_dir/compiler.txt"
 numactl --hardware > "$report_dir/numa.txt"
@@ -110,6 +113,14 @@ if (( ${#fixtures[@]} > 0 )); then
   if [[ "$QPN_SWEEP" == 1 ]]; then real_args+=(--sweep); fi
   run_checked real "${binding[@]}" python3 tools/qpn_run.py "$bench" "${real_args[@]}" \
     --out "$report_dir/real" --iterations 100 --tokens 1 2 3 4 5 8 9 16 17 32
+  # Copies of one real expert at DISTINCT addresses: >L2 working set and
+  # enough independent CTAs for the small N=640 gate/up projection.
+  run_checked streaming "${binding[@]}" python3 tools/qpn_run.py "$bench" \
+    --blob "${fixtures[0]}" --decoders 0 1 --groups 8 16 \
+    --out "$report_dir/streaming" --iterations 50 --tokens 1 2 4 8 16 32
+  run_checked outliers "${binding[@]}" python3 tools/qpn_run.py "$bench" \
+    --blob "${fixtures[0]}" --decoders 0 1 --pattern outliers \
+    --out "$report_dir/outliers" --iterations 50 --tokens 1 2 3 4 8 16 32
   # Optional model-captured FP32 rows. No file contents are uploaded.
   if [[ -r "$QPN_FIXTURE_DIR/activations.f32" ]]; then
     run_checked real-activations "${binding[@]}" python3 tools/qpn_run.py "$bench" "${real_args[@]}" \

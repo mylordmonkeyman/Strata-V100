@@ -19,6 +19,12 @@ All 80 numerical cases and nine sanitizer runs passed, but the scalar QPN
 candidate was 3.5–7.2× slower than legacy grouped execution on these fixtures.
 It is rejected for production dispatch. `--decoder 1` is the next independent
 register-LUT/vector-load candidate; `--decoder 0` retains the measured control.
+The [second V100 run](results/register-lut-v100/README.md) passes numerics but
+still fails the single-expert speed gate. `--groups 8 16` now tests uniform
+multi-expert grids and distinct-address streaming working sets. This is a
+standalone experiment, not the engine's device-count grouped dispatch.
+`--pattern outliers` adds seeded activation outliers; all decode allocations
+have write guards, and graph replay also checks a changed input image.
 
 ## What is implemented
 

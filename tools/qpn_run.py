@@ -48,8 +48,10 @@ def main():
     p.add_argument("--sweep", action="store_true", help="all supported split/acc and input/hidden staging choices")
     p.add_argument("--tokens", type=int, nargs="+", default=[1, 2, 3, 4, 8, 16, 32])
     p.add_argument("--decoders", type=int, nargs="+", choices=[0, 1], default=[0, 1])
+    p.add_argument("--groups", type=int, nargs="+", default=[1])
+    p.add_argument("--pattern", choices=["gaussian", "outliers"], default="gaussian")
     args = p.parse_args()
-    if args.iterations < 1 or any(t < 1 or t > 32 for t in args.tokens):
+    if args.iterations < 1 or any(t < 1 or t > 32 for t in args.tokens) or any(g < 1 or g > 32 for g in args.groups):
         p.error("iterations > 0, tokens 1..32 required")
     binary = args.binary.resolve(strict=True)
     blobs = [b.resolve(strict=True) for b in args.blob]
@@ -67,14 +69,15 @@ def main():
                 "warning": "single expert working set may fit V100 L2; NOT a multi-expert residency benchmark"}
     (args.out / "metadata.json").write_text(json.dumps(metadata, indent=2))
     rows = []
-    for blob, t, decoder in itertools.product(blobs or [None], args.tokens, args.decoders):
+    for blob, t, decoder, groups in itertools.product(blobs or [None], args.tokens, args.decoders, args.groups):
         schedules = itertools.product([4, 8, 16], [4, 8], [1, 2], [False, True], [False, True]) if args.sweep else [
             (4, 4, 1, False, False), (4, 4, 1, True, True)]
         for gu, down, acc, input_q8, hidden_q8 in schedules:
             if t > 16 and gu == 16:
                 continue  # exceeds 48 KiB static shared memory
             argv = [str(binary), "--tokens", str(t), "--iterations", str(args.iterations),
-                    "--split-gu", str(gu), "--split-down", str(down), "--acc", str(acc), "--decoder", str(decoder)]
+                    "--split-gu", str(gu), "--split-down", str(down), "--acc", str(acc), "--decoder", str(decoder),
+                    "--groups", str(groups), "--pattern", args.pattern]
             if blob:
                 argv += ["--blob", str(blob)]
             if args.activations:
@@ -83,7 +86,7 @@ def main():
                 argv.append("--input-q8")
             if hidden_q8:
                 argv.append("--hidden-q8")
-            print(f"candidate {len(rows)+1}: T={t} GU={gu} down={down} acc={acc} decoder={decoder} input_q8={input_q8} hidden_q8={hidden_q8}", flush=True)
+            print(f"candidate {len(rows)+1}: G={groups} T={t} GU={gu} down={down} acc={acc} decoder={decoder} input_q8={input_q8} hidden_q8={hidden_q8}", flush=True)
             result = command(argv)
             try:
                 measurement = json.loads(result["stdout"])

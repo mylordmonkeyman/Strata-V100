@@ -46,6 +46,12 @@ inline bool supported(int cc, int n, int k, int tokens, Schedule s) {
 // host dimensions/schedules throw; CUDA launch failures throw, never retry.
 void projection(const std::uint8_t* weights, const std::uint16_t* x_half,
                 float* output, int n, int k, int tokens, Schedule schedule, void* stream);
+// Standalone uniform multi-expert experiment, not engine grouped dispatch.
+// Distinct matrices start weight_stride bytes apart; X/Y are contiguous
+// [groups,tokens,k/n]. No slot rewrite, host count readback, or scatter.
+void projection_batch(const std::uint8_t* weights, std::size_t weight_stride,
+                      const std::uint16_t* x_half, float* output, int groups,
+                      int n, int k, int tokens, Schedule schedule, void* stream);
 // Explicit input conversion; q8_1 is [half d, half sum, int8 qs[32]], 36 bytes.
 void stage_f32(const float* input, std::uint16_t* output, std::size_t count, void* stream);
 void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, void* stream);

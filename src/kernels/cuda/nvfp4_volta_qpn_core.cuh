@@ -8,6 +8,7 @@
 #pragma once
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <cstddef>
 namespace strata::kernels::qpn::detail {
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
 struct Nvfp4VoltaQpnSchedule {
@@ -60,8 +61,11 @@ __global__ __launch_bounds__(
         ? 1
         : (kTiles == 1 ? 32 : kTiles == 2 ? 16 : 4) / SPLITK) void nvfp4_volta_qpn_gemm_kernel(
     const std::uint8_t* __restrict__ weights, const half* __restrict__ x,
-    int n, int k, int t, float* __restrict__ output) {
+    int n, int k, int t, float* __restrict__ output, std::size_t weight_stride) {
     using S = Nvfp4VoltaQpnSchedule;
+    weights += std::size_t(blockIdx.y)*weight_stride;
+    x += std::size_t(blockIdx.y)*t*k;
+    output += std::size_t(blockIdx.y)*t*n;
 
     __shared__ float cs[SPLITK][kTiles * S::kRowsPerTile * S::kColsPerCta];
 
