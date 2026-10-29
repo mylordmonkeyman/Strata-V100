@@ -41,3 +41,10 @@
 - Before production decisions: profile utilization counters if permitted, quantify weight-supply/hot-vs-cold effects and actual grouped MoE MMQ fallback costs, test numerical/graph/race safety for full expert, and run fixed-seed full-model quality and TTFT comparisons. A gate/up projection speedup is not an end-to-end model speedup.
 
 Production paths, main, model packs, expert cache and unrelated host services remain untouched.
+
+## Counter-permission follow-up
+
+- [V100 Actions run 40918035852](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/40918035852), successful; aggregate artifact **12915944250**, SHA-256 **2a91c97d6953127e23a963e9ff88badd244783b246229880c74f9eb9ead749da**.
+- An explicit offline Nsight Compute 2025.1.1 metric query for chip **gv100** located the tensor-cycle metric. Actual kernel profiling returned **ERR_NVGPUCTRPERM**: the unprivileged Docker runner does not have access to NVIDIA hardware performance counters. No GPU privileges, host driver settings, or container capabilities were changed.
+- A fully independent rerun confirmed the timing pattern (T4: serial 318.36, canonical batched 75.96, chunk-major 62.23 us; T24: serial 273.90, canonical batched 97.18, chunk-major 64.26 us). Both Compute Sanitizer T4/T24 checks again showed **0 errors** and the workflow completed successfully.
+- Exact tensor pipeline active-cycle percentage, achieved occupancy and DRAM transaction counts remain **unmeasured**. The controlled batching and layout ablations establish their combined latency effects, not a unique tensor-core or DRAM causal decomposition. Hardware counter access would require an explicit host/runner permission change, which is out of scope here.
