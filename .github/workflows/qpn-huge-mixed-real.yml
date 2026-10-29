@@ -1,0 +1,51 @@
+name: QPN real 187-and-508-row hybrid vs MMQ qualification
+on:
+  push:
+    branches: ['qpn/large-route-probe']
+    paths:
+      - 'tools/qpn_huge_mixed_gpu_ci.sh'
+      - '.github/workflows/qpn-huge-mixed-real.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  huge-real:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 120
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '16'
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40908922475
+          name: qpn-mixed-fixture-40908922475-1
+          path: pinned-mixed-summary
+      - name: Verify pinned real input and compare MMQ with QPN for T187 and T508
+        shell: bash
+        run: bash tools/qpn_huge_mixed_gpu_ci.sh
+      - name: Upload aggregate speed, parity and sanitizer results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-huge-mixed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-huge-mixed-results/provenance.json
+            qpn-huge-mixed-results/measurement-min129.json
+            qpn-huge-mixed-results/memcheck-measurement-min129.json
+            qpn-huge-mixed-results/racecheck-measurement-min129.json
+            qpn-huge-mixed-results/memcheck-min129.log
+            qpn-huge-mixed-results/racecheck-min129.log
+            qpn-huge-mixed-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14
