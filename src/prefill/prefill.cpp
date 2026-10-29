@@ -9,6 +9,7 @@
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
 #include "strata/prefill/qpn_experiment_policy.hpp"
 #include "strata/kernels/nvfp4_volta_qpn.hpp"
+#include "ggml.h"  // GGML_TYPE_NVFP4; only under the opt-in build gate
 #endif
 #include "wmma_gemm.h"
 #include "strata/core/mtp.hpp"
@@ -4247,6 +4248,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         // the experts, in id order: resident ones from VRAM, the others through the staging ring
                         std::vector<int32_t> order, order_peer;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                        bool qpn_layer = false;  // declared outside compact_l/else for the later compute lambda
+#endif
                         if (compact_l) {
                             // EVERY id 0..n_expert-1, count-0 ones included (their bounds are equal): a GROUPS batch
                             // then spans at most GROUPS streamed entries, so the ring always covers a whole group.
@@ -4281,7 +4285,6 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // single-device, pure native NVFP4 W4A8 route is currently eligible.
                         // Stream-all uses a separate ordered asynchronous blob issuer; never
                         // permute its experts without changing that ownership protocol.
-                        bool qpn_layer = false;
                         if (detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL")) &&
                             !stream_all && !fused_l && !compact_l && use_mmq &&
                             lay.native && !had_gu && !had_d &&
