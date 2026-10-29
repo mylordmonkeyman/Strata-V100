@@ -1,5 +1,5 @@
 import unittest
-from qpn_prefill_run import crossover, captured_token_buckets
+from qpn_prefill_run import crossover, captured_token_buckets, tile_variants
 
 
 def arm(name, available=True, valid=True, times=None):
@@ -33,6 +33,17 @@ class CapturedActivationTest(unittest.TestCase):
         for rows in (0, -1, 33, 1.5, None):
             with self.subTest(rows=rows), self.assertRaises(ValueError):
                 captured_token_buckets(rows)
+
+
+class TokenTileSweepTest(unittest.TestCase):
+    def test_distinct_schedules_and_default_control(self):
+        vs=[0,8,16]
+        self.assertEqual(tile_variants(1,vs),[0])
+        self.assertEqual(tile_variants(8,vs),[0])
+        self.assertEqual(tile_variants(12,vs),[0,8])
+        self.assertEqual(tile_variants(16,vs),[0,8])
+        self.assertEqual(tile_variants(29,vs),[0,8,16])
+        self.assertEqual(tile_variants(32,vs),[0,8,16])
 
 
 if __name__=="__main__": unittest.main()

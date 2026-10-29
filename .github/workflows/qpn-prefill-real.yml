@@ -1,7 +1,7 @@
 name: QPN real-activation prefill crossover
 on:
   push:
-    branches: ['qpn/prefill-real']
+    branches: ['qpn/prefill-tiles']
 permissions:
   contents: read
   actions: read

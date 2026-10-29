@@ -22,6 +22,12 @@ def captured_token_buckets(rows):
     return sorted({t for t in (1, 2, 4, 8, 16, 32, rows) if t <= rows})
 
 
+def tile_variants(tokens, choices):
+    """Retain default as control; skip redundant and small-token alternatives."""
+    base = 8 if tokens <= 8 else 16 if tokens <= 16 else 32
+    return [t for t in choices if t == 0 or (tokens >= 12 and t != base)]
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("binary",type=Path)
@@ -29,9 +35,13 @@ def main():
     p.add_argument("--activations",type=Path,help="raw FP32 actual routed rows; each row has 2560 floats")
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--iterations",type=int,default=100)
+    p.add_argument("--qpn-tiles",type=int,nargs="+",default=[0],
+                   help="0 baseline schedule, plus optional explicit 8/16/32-row CTA tiles")
     p.add_argument("--tokens",type=int,nargs="+",default=[1,2,4,8,16,32,33,64,128,256,512])
     a=p.parse_args()
     if a.iterations<1 or any(t<1 or t>512 for t in a.tokens): p.error("invalid iterations/tokens")
+    if not a.qpn_tiles or len(set(a.qpn_tiles)) != len(a.qpn_tiles) or 0 not in a.qpn_tiles or any(v not in (0,8,16,32) for v in a.qpn_tiles):
+        p.error("QPN tile variants must be unique, contain 0, and use 0/8/16/32")
     binary=a.binary.resolve(strict=True); a.out.mkdir(parents=True,exist_ok=False)
     blobs=[b.resolve(strict=True) for b in a.blob]
     activation=a.activations.resolve(strict=True) if a.activations else None
@@ -47,19 +57,28 @@ def main():
     rows=[]; failures=0
     for blob in blobs or [None]:
         for t in a.tokens:
-            argv=[str(binary),"--tokens",str(t),"--iterations",str(a.iterations)]
-            if blob: argv += ["--blob",str(blob)]
-            if activation: argv += ["--activations",str(activation)]
-            r=command(argv)
-            try:
-                r["measurement"]=json.loads(r["stdout"])
-                r["selected_backend"]=crossover(r["measurement"])
-            except (ValueError,KeyError,TypeError) as exc: r["parse_error"]=str(exc)
-            failures += int(r["returncode"]!=0 or "parse_error" in r)
-            rows.append(r)
-            with (a.out/"raw.jsonl").open("a") as f: f.write(json.dumps(r,allow_nan=False)+"\n")
-            (a.out/"summary.json").write_text(json.dumps({"cases":len(rows),"failed":failures,"prefill_gate":"pending end-to-end TTFT", "crossover":[{"blob":str(blob) if blob else "synthetic","tokens":r.get("measurement",{}).get("tokens"),"backend":r.get("selected_backend")} for r in rows]},indent=2))
-            print(f"prefill T={t}: {r.get('selected_backend')} exit={r['returncode']}",flush=True)
+            for tile in tile_variants(t, a.qpn_tiles):
+                argv=[str(binary),"--tokens",str(t),"--iterations",str(a.iterations),
+                      "--qpn-tile",str(tile)]
+                if blob: argv += ["--blob",str(blob)]
+                if activation: argv += ["--activations",str(activation)]
+                r=command(argv)
+                r["blob"]=str(blob) if blob else "synthetic"
+                r["qpn_tile"]=tile
+                try:
+                    r["measurement"]=json.loads(r["stdout"])
+                    r["selected_backend"]=crossover(r["measurement"])
+                except (ValueError,KeyError,TypeError) as exc: r["parse_error"]=str(exc)
+                failures += int(r["returncode"]!=0 or "parse_error" in r)
+                rows.append(r)
+                with (a.out/"raw.jsonl").open("a") as f:
+                    f.write(json.dumps(r,allow_nan=False)+"\n")
+                (a.out/"summary.json").write_text(json.dumps({
+                    "cases":len(rows),"failed":failures,"prefill_gate":"pending end-to-end TTFT",
+                    "crossover":[{"blob":case["blob"],"tokens":case.get("measurement",{}).get("tokens"),
+                                  "qpn_tile":case["qpn_tile"],"backend":case.get("selected_backend")}
+                                 for case in rows]},indent=2))
+                print(f"prefill T={t} tile={tile}: {r.get('selected_backend')} exit={r['returncode']}",flush=True)
     return int(failures>0)
 
 

@@ -50,7 +50,8 @@ def main():
         cmd=[sys.executable,str(Path(__file__).with_name("qpn_prefill_run.py")),
              str(a.binary),"--blob",str(blob),"--activations",str(activation),
              "--tokens",*map(str,captured_token_buckets(rows)),
-             "--iterations",str(a.iterations),"--out",str(output)]
+             "--iterations",str(a.iterations),"--qpn-tiles","0","8","16",
+             "--out",str(output)]
         res=subprocess.run(cmd,check=False)
         failures+=int(res.returncode!=0)
         raw=output/"raw.jsonl"
@@ -61,7 +62,8 @@ def main():
             meas=row.get("measurement",{})
             winner=row.get("selected_backend")
             if winner: counts[winner]+=1
-            records.append({"tokens":meas.get("tokens"),"winner":winner,
+            records.append({"tokens":meas.get("tokens"),"qpn_tile":row.get("qpn_tile"),
+                            "winner":winner,
                             "qpn_vs_mmq":qualified_ratio(row),
                             "qpn_vs_fp16":qualified_ratio(row,"dequant_fp16_cublas"),
                             "exit_code":row["returncode"]})
