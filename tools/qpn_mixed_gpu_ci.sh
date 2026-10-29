@@ -54,4 +54,15 @@ for min in 1 17; do
   grep -q 'ERROR SUMMARY: 0 errors' "qpn-mixed-gpu-results/memcheck-min${min}.log"
   "$py" -m json.tool "qpn-mixed-gpu-results/memcheck-measurement-min${min}.json" >/dev/null
 done
-echo 'GPU real mixed-group parity, graph and memcheck gates passed.'
+# Racecheck is separate from memcheck; fail closed on shared-memory hazards.
+for min in 1 17; do
+  numactl --cpunodebind=0 --membind=0 compute-sanitizer \
+    --tool racecheck --error-exitcode 98 \
+    --log-file "qpn-mixed-gpu-results/racecheck-min${min}.log" \
+    "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
+    --qpn-min "$min" --rounds 1 --iterations 1 --graph-check \
+    > "qpn-mixed-gpu-results/racecheck-measurement-min${min}.json"
+  grep -q 'ERROR SUMMARY: 0 errors' "qpn-mixed-gpu-results/racecheck-min${min}.log"
+  "$py" -m json.tool "qpn-mixed-gpu-results/racecheck-measurement-min${min}.json" >/dev/null
+done
+echo 'GPU real mixed-group parity, graph, memcheck and racecheck gates passed.'

@@ -331,6 +331,30 @@ int main(int argc,char** argv)try{
         times[arm].push_back(double(ms)*1000/iterations);
     }
     check_canary();
+    // Replay the SAME two complete grouped workloads as CUDA graphs to
+    // distinguish ordinary host submission gaps from GPU-side work.
+    std::array<std::vector<double>,2> graph_times;
+    if(check_graph){
+        Graph graphs[2];
+        for(int arm=0;arm<2;arm++){
+            const std::function<void()> run=arm?std::function<void()>(mix):std::function<void()>(all);
+            ck(cudaStreamBeginCapture(s,cudaStreamCaptureModeThreadLocal));
+            run();
+            ck(cudaStreamEndCapture(s,&graphs[arm].g));
+            ck(cudaGraphInstantiate(&graphs[arm].exec,graphs[arm].g,nullptr,nullptr,0));
+        }
+        for(int rep=0;rep<rounds;rep++)for(int j=0;j<2;j++){
+            const int arm=(rep+j)%2;
+            for(int warm=0;warm<2;warm++)ck(cudaGraphLaunch(graphs[arm].exec,s));
+            ck(cudaEventRecord(events.a,s));
+            for(int i=0;i<iterations;i++)ck(cudaGraphLaunch(graphs[arm].exec,s));
+            ck(cudaEventRecord(events.b,s));ck(cudaEventSynchronize(events.b));
+            float ms=0;ck(cudaEventElapsedTime(&ms,events.a,events.b));
+            if(ms<=0||!std::isfinite(ms))throw std::runtime_error("invalid graph timing");
+            graph_times[arm].push_back(double(ms)*1000/iterations);
+        }
+        check_canary();
+    }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
     std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"routed_rows\":%d,",
                 fallback_groups,E-fallback_groups,qpn_min,rows);
@@ -343,5 +367,11 @@ int main(int argc,char** argv)try{
     std::printf("\"output_tail_guard_ok\":true,\"iterations\":%d,\"rounds\":%d,",iterations,rounds);
     std::printf("\"all_mmq_us\":");arr(times[0]);std::printf(",\"mixed_qpn_mmq_us\":");arr(times[1]);
     if(rounds>=5)std::printf(",\"all_mmq_median_us\":%.6f,\"mixed_median_us\":%.6f,\"mixed_over_mmq_speedup\":%.7f",med(times[0]),med(times[1]),med(times[0])/med(times[1]));
+    if(check_graph){
+        std::printf(",\"all_mmq_graph_us\":");arr(graph_times[0]);
+        std::printf(",\"mixed_graph_us\":");arr(graph_times[1]);
+        if(rounds>=5)std::printf(",\"all_mmq_graph_median_us\":%.6f,\"mixed_graph_median_us\":%.6f,\"mixed_graph_speedup\":%.7f",
+                                 med(graph_times[0]),med(graph_times[1]),med(graph_times[0])/med(graph_times[1]));
+    }
     std::printf("}\n");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"mixed_gpu_bench: %s\n",e.what());return 2;}
