@@ -1,5 +1,9 @@
 # Set up the local V100 GitHub Actions runner
 
+**Docker is the preferred setup for this project:** use the
+[Dockerfile, Compose configuration and startup commands](../../docker/qpn-runner/README.md).
+The remaining instructions on this page describe the alternative native service.
+
 Target: your Ubuntu 24.04 server, Tesla V100-PCIe-32GB on GPU 0, CUDA 12.8,
 dual Xeon E5-2697A v4. The M2000 is excluded. Benchmarks bind to NUMA node 0.
 

@@ -1,6 +1,6 @@
 # NVFP4 Volta QPN prototype — hardware qualification pending
 
-For automated tests on your server, use the [self-hosted V100 runner setup](self-hosted-runner.md)
+For automated tests on your server, use the [Docker V100 runner setup](../../docker/qpn-runner/README.md)
 and [workflow YAML](../../.github/workflows/qpn-v100.yml).
 
 This branch contains a **standalone experimental direct-layout candidate**,

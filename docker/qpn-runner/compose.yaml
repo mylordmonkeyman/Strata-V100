@@ -1,0 +1,52 @@
+name: strata-qpn
+services:
+  runner:
+    build:
+      context: .
+    image: strata-qpn-runner:cuda12.8
+    container_name: strata-qpn-runner
+    restart: unless-stopped
+    stop_grace_period: 2m
+    user: "10001:10001"
+    # This host's NUMA node 0: physical cores and their HT siblings.
+    cpuset: "0-15,32-47"
+    mem_limit: 48g
+    shm_size: 8g
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      # Docker's default profile blocks NUMA memory-policy syscalls.
+      - seccomp:unconfined
+    environment:
+      RUNNER_REPOSITORY_URL: https://github.com/mylordmonkeyman/Strata-V100
+      RUNNER_NAME: strata-v100-qpn-docker
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QPN_GPU_UUID:?Set the V100 UUID in .env}"]
+              capabilities: [gpu]
+    volumes:
+      - runner-data:/runner
+      - qpn-state:/srv/strata-qpn
+      - type: bind
+        source: /srv/strata-qpn/fixtures
+        target: /srv/strata-qpn/fixtures
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - registration_token
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+secrets:
+  registration_token:
+    file: /srv/strata-qpn/registration-token
+volumes:
+  runner-data:
+  qpn-state:
