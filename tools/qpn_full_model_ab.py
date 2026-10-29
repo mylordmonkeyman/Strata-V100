@@ -41,6 +41,45 @@ def diff(a,b):
     return {'n_logits':len(a),'relative_l2':math.sqrt(diff2/base2) if base2 else float("inf"),
             'kl_base_vs_candidate':max(0,kl),'argmax_match':ia==ib,
             'argmax_base':ia,'argmax_candidate':ib}
+def safe_failure_diagnostics(log):
+    """Keep raw model/CLI logs private; upload only typed startup failure hints."""
+    raw=Path(log).read_text(errors="replace")
+    lines=raw.splitlines()
+    keys={
+      "usage":r"\busage\b",
+      "unknown_argument":r"unknown (?:argument|option)|unrecognized arguments|unrecognized option",
+      "invalid_argument":r"invalid (?:argument|value|option|prefill|token|context)",
+      "missing_required":r"(?:missing|required|must provide|must specify)",
+      "model_load":r"(?i)model.*(?:load|open|fail)|(?:fail|cannot).*model",
+      "cuda_allocation":r"out of memory|cudaMalloc|memory allocation|insufficient memory",
+      "prefill_constraint":r"prefill.{0,60}(?:range|multiple|power|invalid|supported|between|must|requires)",
+      "context_constraint":r"context.{0,60}(?:max|invalid|must|too|exceeds)",
+      "pack_error":r"pack.{0,60}(?:missing|invalid|not found|failed)",
+      "token_parse":r"tokens-file.{0,70}(?:invalid|failed|missing|not found)",
+      "exception":r"(?:exception|traceback|terminate called|fatal)",
+    }
+    counts={k:len(re.findall(v,raw,re.IGNORECASE)) for k,v in keys.items()}
+    # Log line templates can be printed without filenames, token values or
+    # prompt text; expose only an allowlisted diagnostic phrase.
+    safe_patterns=[
+       ("unsupported_prefill","prefill",("unsupported","must be","multiple of","power of","invalid","range")),
+       ("unknown_flag","unknown option",()),
+       ("unrecognized_flag","unrecognized",("option","argument")),
+       ("missing_pack","expert pack",("missing","not found","invalid")),
+       ("out_of_memory","out of memory",()),
+       ("device_failure","cuda",("failed","error")),
+    ]
+    categories=[]
+    for line in lines:
+        lower=line.lower()
+        for name,term,quals in safe_patterns:
+            if term in lower and (not quals or any(q in lower for q in quals)):
+                if name not in categories:categories.append(name)
+    return {"exit_log_sha256":sha(log),"log_lines":len(lines),
+            "log_bytes":Path(log).stat().st_size,
+            "pattern_counts":counts,"safe_categories":categories,
+            "first_line_length":len(lines[0]) if lines else 0}
+
 def read_summary(log):
     # Full raw logs, including prompt IDs, stay in private runner-only state.
     text=Path(log).read_text(errors="replace")
@@ -111,6 +150,7 @@ def main():
         row={'index':idx,'mode':mode,'returncode':code,'wall_s':time.monotonic()-started,
              'raw_log_private':True,'raw_logits_private':True}
         row.update(read_summary(raw_log))
+        if code!=0:row['startup_diagnostics']=safe_failure_diagnostics(raw_log)
         if code==0 and raw_logits.is_file():
             row['first_logits_sha256']=sha(raw_logits)
             row['first_logits_bytes']=raw_logits.stat().st_size
