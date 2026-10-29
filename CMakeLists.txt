@@ -2237,3 +2237,6 @@ if(STRATA_HIP_GFX906)
   endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
 endif()
+
+# Isolated experimental QPN tools; the engine's link graph stays unchanged.
+include(cmake/volta_qpn.cmake)

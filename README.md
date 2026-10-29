@@ -1,5 +1,9 @@
 # Strata-V100
 
+> This fork's experimental NVFP4 QPN work is on `qpn/*` branches. See
+> [the standalone prototype and V100 qualification commands](benchmarks/qpn/README.md).
+> Engine integration and performance qualification are pending; no new backend is enabled.
+
 **A community-maintained V100-focused fork of [Strata](https://github.com/Niko1221/Strata).** This fork keeps NVIDIA Volta (`sm_70`) support working, develops and measures performance changes on Tesla V100 hardware, and periodically merges upstream improvements for features and fixes beyond V100.
 
 Strata is an open-source local runtime for [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next). It combines GPU, system memory, and storage to run this large model on a personal computer. This fork retains the broader Strata project: other supported NVIDIA and AMD hardware, the web interface, OpenAI-compatible API, tools, image input, and upstream features remain important too.

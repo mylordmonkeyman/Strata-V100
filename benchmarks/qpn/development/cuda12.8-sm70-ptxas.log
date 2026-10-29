@@ -1,0 +1,107 @@
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212stage_kernelILb1EEEvPKvP6__halfm' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212stage_kernelILb1EEEvPKvP6__halfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 376 bytes cmem[0]
+ptxas info    : Compile time = 1.886 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212stage_kernelILb0EEEvPKvP6__halfm' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212stage_kernelILb0EEEvPKvP6__halfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 12 registers, used 0 barriers, 376 bytes cmem[0]
+ptxas info    : Compile time = 0.847 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212probe_kernelEPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb212probe_kernelEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 10 registers, used 0 barriers, 360 bytes cmem[0]
+ptxas info    : Compile time = 1.564 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb211down_kernelEPfPKfm' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb211down_kernelEPfPKfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 10 registers, used 0 barriers, 376 bytes cmem[0]
+ptxas info    : Compile time = 0.722 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb213swiglu_kernelEPKfS4_S4_Pfm' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn58_GLOBAL__N__a5f164df_25_nvfp4_volta_qpn_decode_cu_f0d4ecb213swiglu_kernelEPKfS4_S4_Pfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 0 barriers, 392 bytes cmem[0]
+ptxas info    : Compile time = 4.952 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi8ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi8ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 136 registers, used 1 barriers, 32768 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 86.240 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi8ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi8ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 106 registers, used 1 barriers, 32768 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 79.197 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi4ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi4ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 143 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 84.170 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi4ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi4ELi4ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 106 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 74.635 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi16ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi16ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 103 registers, used 1 barriers, 32768 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 54.806 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi16ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi16ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 87 registers, used 1 barriers, 32768 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 49.567 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi8ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi8ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 103 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 54.423 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi8ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi8ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 87 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 50.462 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi4ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi4ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 102 registers, used 1 barriers, 8192 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 56.088 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi4ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi2ELi4ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 87 registers, used 1 barriers, 8192 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 49.564 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi16ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi16ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 44.129 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi16ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi16ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 16384 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 38.744 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi8ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi8ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 8192 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 39.871 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi8ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi8ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 8192 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 40.512 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi4ELi2EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi4ELi2EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 4096 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 43.281 ms
+ptxas info    : Compiling entry function '_ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi4ELi1EEEvPKhPK6__halfiiiPf' for 'sm_70'
+ptxas info    : Function properties for _ZN6strata7kernels3qpn6detail27nvfp4_volta_qpn_gemm_kernelILi1ELi4ELi1EEEvPKhPK6__halfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers, 4096 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compile time = 38.205 ms
