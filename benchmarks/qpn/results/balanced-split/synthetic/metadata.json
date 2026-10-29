@@ -1,0 +1,96 @@
+{
+  "utc": "2026-10-29T02:09:46.027014+00:00",
+  "binary_sha256": "c7be01185dfe89eb6c438182ee254907d11ce747ee697e223f1d0da2835d2d67",
+  "blobs": {},
+  "activations_sha256": null,
+  "host": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47
+  ],
+  "git": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "returncode": 0,
+    "stdout": "ca64e263c6a451de686d5cdeac78c409ee9f271d\n",
+    "stderr": ""
+  },
+  "gpu_before": {
+    "argv": [
+      "nvidia-smi",
+      "--query-gpu=name,uuid,driver_version,temperature.gpu,clocks.sm,clocks.mem,power.draw,pstate",
+      "--format=csv"
+    ],
+    "returncode": 0,
+    "stdout": "name, uuid, driver_version, temperature.gpu, clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W], pstate\nTesla V100-PCIE-32GB, GPU-8bbdb0ea-0a01-5e00-9309-081498b35342, 580.178.04, 42, 135 MHz, 877 MHz, 26.89 W, P0\n",
+    "stderr": ""
+  },
+  "controls": {
+    "CUDA_VERSION": "12.8.1",
+    "CUDA_VISIBLE_DEVICES": "0",
+    "OMP_NUM_THREADS": "8",
+    "CUDA_MODULE_LOADING": "EAGER"
+  },
+  "configuration": {
+    "binary": "/srv/strata-qpn/builds/a497a16aafe4/nvfp4_volta_qpn_bench",
+    "activations": null,
+    "out": "/runner/_work/Strata-V100/Strata-V100/qpn-results/synthetic",
+    "iterations": 10,
+    "sweep": false,
+    "tokens": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      8,
+      9,
+      16,
+      17,
+      32
+    ],
+    "decoders": [
+      0,
+      1
+    ],
+    "groups": [
+      1
+    ],
+    "pattern": "gaussian",
+    "fp32_only": false
+  },
+  "warning": "single expert working set may fit V100 L2; NOT a multi-expert residency benchmark"
+}
