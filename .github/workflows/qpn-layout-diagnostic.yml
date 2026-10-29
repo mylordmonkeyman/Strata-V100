@@ -86,8 +86,9 @@ jobs:
           # Counter probe is best-effort only: never grant GPU privileges.
           if command -v ncu >/dev/null; then
             ncu --version > qpn-layout-results/ncu-version.txt 2>&1 || true
-            if timeout 20 ncu --query-metrics 2>/dev/null | \
-                grep -q 'sm__pipe_tensor_cycles_active'; then
+            if timeout 20 ncu --query-metrics --chip gv100 \
+                > qpn-layout-results/ncu-chip-query.txt 2>&1 && \
+                grep -q 'sm__pipe_tensor_cycles_active' qpn-layout-results/ncu-chip-query.txt; then
               if timeout 120 ncu --csv \
                   --kernel-name 'regex:.*nvfp4_volta_qpn_gemm_kernel.*' \
                   --launch-count 14 \
@@ -102,7 +103,7 @@ jobs:
                   >> qpn-layout-results/ncu-status.txt
               fi
             else
-              echo 'Selected tensor metric unavailable' > qpn-layout-results/ncu-status.txt
+              echo 'GV100 tensor metric not discoverable; hardware utilization unmeasured' > qpn-layout-results/ncu-status.txt
             fi
           else
             echo 'Nsight Compute unavailable in existing runner' > qpn-layout-results/ncu-status.txt
