@@ -1,5 +1,18 @@
 # Experimental complete 16-expert mixed GPU benchmark
 
+> **Qualification closed (2026-10-29):** See the provenance-rich
+> [final real V100 mixed-route report](results/2026-10-29-mixed-route-final-v100.md)
+> (GPU run [40938946514](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/40938946514),
+> both routing policies passing sampled double-precision parity, CUDA
+> Graph replay/changed input, output guards, memcheck **and racecheck**
+> with zero hazards). Selective QPN for 17–32 routed rows is 5.17% lower
+> ordinary sample latency and 6.13% lower CUDA Graph latency versus matched
+> all-MMQ; indiscriminate QPN for <=32 is slower. Production integration,
+> actual model TTFT and wider kernel sweeps are **not** qualified.
+> The below describes earlier development checkpoints and has superseded
+> pending-gate statements.
+
+
 The private fixture is pinned to successful V100 run **40908922475**,
 metadata-only artifact **12913635075**, against the baseline M0 manifest
 SHA-256 218ae1f7fa5bb03ee01aba98278848e13ce17478957ec2300a0e58272af8270d.
