@@ -1,0 +1,47 @@
+name: QPN real mixed-expert V100 GPU qualification
+on:
+  push:
+    branches: ['qpn/mixed-route-bench']
+    paths:
+      - 'src/kernels/nvfp4_volta_mixed_bench.cpp'
+      - 'tools/qpn_mixed_gpu_ci.sh'
+      - 'tools/qpn_mixed_gpu_verify.py'
+      - 'tools/test_qpn_mixed_gpu_verify.py'
+      - 'cmake/volta_qpn.cmake'
+      - '.github/workflows/qpn-mixed-gpu.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  grouped:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 100
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${ github.token }}
+          run-id: 40908922475
+          name: qpn-mixed-fixture-40908922475-1
+          path: pinned-mixed-summary
+      - name: Verify real private inputs, build and run grouped GPU parity/graph/memcheck
+        shell: bash
+        run: bash tools/qpn_mixed_gpu_ci.sh
+      - name: Upload aggregates only (never raw model weights or activations)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-mixed-gpu-${ github.run_id }}-${ github.run_attempt }}
+          path: qpn-mixed-gpu-results/
+          if-no-files-found: warn
+          retention-days: 14
