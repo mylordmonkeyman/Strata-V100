@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import statistics
 import subprocess
 import time
 
@@ -111,11 +112,27 @@ def read_summary(log):
             'qpn_groups':sum(int(g[1]) for g in execution),
             'qpn_experts':sum(int(g[2]) for g in execution),
             'error_lines':sum("error" in line.lower() for line in text.splitlines())}
+def ab_modes(fusion_ab):
+    return ("qpn-base", "qpn-fused", "qpn-fused", "qpn-base") if fusion_ab else ("mmq", "qpn-fused", "qpn-fused", "mmq")
+
+
+def classify_quality(comparisons, performance_only):
+    # A performance-only result NEVER asserts numerical acceptance.
+    quality_ok=all(x["kl_base_vs_candidate"]<0.03 and x["argmax_match"] for x in comparisons)
+    if quality_ok:
+        return ("performance_only_quality_observed" if performance_only else "pass"), quality_ok
+    return ("performance_only_quality_unqualified" if performance_only else "failed_first_logits_quality"), quality_ok
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ("source","binary","prepared","state","report"):p.add_argument("--"+name,required=True,type=Path)
     p.add_argument("--prefill",type=int,default=768)
     p.add_argument("--runs",type=int,default=4)
+    p.add_argument("--fusion-ab",action="store_true",
+                   help="A=original QPN, B=opt-in fused QPN; both use matched QPN grouping")
+    p.add_argument("--performance-only",action="store_true",
+                   help="record first-logit KL and top-1, but do not fail A/B solely on model-quality threshold")
     a=p.parse_args()
     if a.prefill!=768 or a.runs!=4:raise ValueError("only pinned 768-token ABBA experiment qualified")
     a.report.mkdir(parents=True,exist_ok=True)
@@ -139,7 +156,10 @@ def main():
          "--expert-cache","auto","--expert-profile",str(a.source/"data/expert-profile.bin"),
          "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","2",
          "--suffix-draft","0","--adapt-every","0","--vram-reserve-mib","1536","--stats"]
-    summary={'schema':1,'scope':'staged 768-row full-model ABBA; not default 1024 stream-all path',
+    modes=ab_modes(a.fusion_ab)
+    summary={'schema':2,'scope':'performance-focused staged 768-row full-model ABBA; not default 1024 stream-all path',
+             'control_mode':modes[0],'candidate_mode':modes[1],
+             'performance_only':a.performance_only,'numerical_quality_qualified':False,
              'source_commit':subprocess.check_output(["git","-C",str(a.source),"rev-parse","HEAD"],text=True).strip(),
              'model_sha256':sha(a.prepared/"pack/experts.bin"),
              'binary_sha256':sha(a.binary),'prompt_sha256':sha(tokenfile),
@@ -148,9 +168,10 @@ def main():
     outfile=a.report/"summary.json"
     def persist():outfile.write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     persist()
-    for idx,mode in enumerate(("mmq","qpn","qpn","mmq")):
+    for idx,mode in enumerate(modes):
         trialenv=env.copy()
-        trialenv['STRATA_QPN_PREFILL_EXPERIMENTAL']='1' if mode=='qpn' else '0'
+        trialenv['STRATA_QPN_PREFILL_EXPERIMENTAL']='0' if mode=='mmq' else '1'
+        trialenv['STRATA_QPN_PREFILL_FUSED_GU']='1' if mode=='qpn-fused' else '0'
         raw_log=private/f"{idx}-{mode}.log"
         raw_logits=private/f"{idx}-{mode}.logits.f32"
         if raw_log.exists():raw_log.unlink()
@@ -178,26 +199,35 @@ def main():
         print(f"full-model ABBA {idx}: {mode} exit={code} TTFT={row['ttft_ms']} ms QPN groups={row['qpn_groups']}",flush=True)
         if(code!=0 or row['ttft_ms'] is None or row['decode_toks_per_s'] is None or
            not raw_logits.is_file() or row['qpn_plan_groups']==0 or
-           (mode=="qpn" and row['qpn_groups']==0) or
+           (mode!="mmq" and row['qpn_groups']==0) or
            (mode=="mmq" and row['qpn_groups']!=0)):
             summary['status']='failed_execution_or_unexercised_kernel'
             persist()
             return 2
     for bi,qi in ((0,1),(3,2)):
-        b=summary['runs'][bi];q=summary['runs'][qi]
-        metrics=diff(logits(private/f"{bi}-mmq.logits.f32"),logits(private/f"{qi}-qpn.logits.f32"))
-        metrics.update({'mmq_index':bi,'qpn_index':qi,
-                        'mmq_ttft_ms':b['ttft_ms'],'qpn_ttft_ms':q['ttft_ms'],
-                        'ttft_speedup':b['ttft_ms']/q['ttft_ms'],
-                        'mmq_prefill_ms':b['prefill_ms'],'qpn_prefill_ms':q['prefill_ms'],
-                        'prefill_speedup':b['prefill_ms']/q['prefill_ms'],
-                        'mmq_decode_toks_per_s':b['decode_toks_per_s'],
-                        'qpn_decode_toks_per_s':q['decode_toks_per_s']})
-        summary['comparisons'].append(metrics)
-    # Strict numerical guard: no quality claim on first logit mismatch. Distinguish
-    # slower model from incorrect model; a regression is NOT a CI failure.
-    summary['status']='pass' if all(x['kl_base_vs_candidate']<0.03 and x['argmax_match']
-                                  for x in summary['comparisons']) else 'failed_first_logits_quality'
+        b=summary["runs"][bi]
+        q=summary["runs"][qi]
+        metrics=diff(logits(private/f"{bi}-{modes[bi]}.logits.f32"),
+                     logits(private/f"{qi}-{modes[qi]}.logits.f32"))
+        metrics.update({"control_index":bi,"candidate_index":qi,
+                        "control_mode":modes[bi],"candidate_mode":modes[qi],
+                        "control_ttft_ms":b["ttft_ms"],"candidate_ttft_ms":q["ttft_ms"],
+                        "ttft_speedup":b["ttft_ms"]/q["ttft_ms"],
+                        "control_prefill_ms":b["prefill_ms"],"candidate_prefill_ms":q["prefill_ms"],
+                        "prefill_speedup":b["prefill_ms"]/q["prefill_ms"],
+                        "control_decode_toks_per_s":b["decode_toks_per_s"],
+                        "candidate_decode_toks_per_s":q["decode_toks_per_s"]})
+        summary["comparisons"].append(metrics)
+    summary["median_prefill_ms"]={
+        "control":statistics.median(r["prefill_ms"] for r in summary["runs"] if r["mode"]==modes[0]),
+        "candidate":statistics.median(r["prefill_ms"] for r in summary["runs"] if r["mode"]==modes[1])}
+    c=summary["median_prefill_ms"]
+    summary["median_prefill_speedup"]=c["control"]/c["candidate"]
+    summary["status"],summary["numerical_quality_qualified"]=classify_quality(
+        summary["comparisons"],a.performance_only)
+    # Performance-only mode still fails closed on startup, missing QPN execution,
+    # absent logits, or nonfinite numerical output. It simply records an
+    # otherwise failing first-logit acceptance criterion as unqualified.
     persist()
-    return 0 if summary['status']=='pass' else 3
+    return 0 if a.performance_only or summary["status"]=="pass" else 3
 if __name__=="__main__":raise SystemExit(main())
