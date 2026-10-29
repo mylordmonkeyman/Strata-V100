@@ -1,9 +1,12 @@
-name: QPN opt-in staged full-model V100 ABBA qualification
+name: QPN widened GU performance-first ABBA
 on:
   push:
-    branches: ['qpn/full-model-opt-in']
+    branches: ['qpn/performance-first']
     paths:
       - 'src/prefill/prefill.cpp'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_decode.cu'
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
+      - 'tools/test_qpn_full_model_perf.py'
       - 'include/strata/prefill/qpn_experiment_policy.hpp'
       - 'tests/qpn_prefill_policy_test.cpp'
       - 'cmake/volta_qpn.cmake'
@@ -27,6 +30,7 @@ jobs:
             -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=ON
           cmake --build build-qpn-policy --target qpn_prefill_policy_test -j2
           ctest --test-dir build-qpn-policy -R '^qpn_prefill_policy$' --output-on-failure
+          python3 -m unittest discover -s tools -p 'test_qpn_full_model_perf.py' -v
           if cmake -S . -B build-qpn-guard \
               -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF \
               -DSTRATA_ENABLE_VOLTA_QPN=OFF \
@@ -79,7 +83,8 @@ jobs:
           test -x "$py"
           "$py" tools/qpn_full_model_ab.py \
             --source "$PWD" --binary "$build/strata" --prepared "$source/prepared" \
-            --state "$source" --report qpn-full-model-results --prefill 768 --runs 4
+            --state "$source" --report qpn-full-model-results --prefill 768 --runs 4 \
+            --fusion-ab --performance-only
           "$py" -m json.tool qpn-full-model-results/summary.json >/dev/null
       - name: Upload numerical/TTFT aggregates only (raw token IDs, raw logits, logs stay private)
         if: always()
