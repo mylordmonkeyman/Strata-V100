@@ -75,9 +75,23 @@ def safe_failure_diagnostics(log):
         for name,term,quals in safe_patterns:
             if term in lower and (not quals or any(q in lower for q in quals)):
                 if name not in categories:categories.append(name)
+    # The control exited before the model was loaded (four messages). Expose
+    # only the final startup diagnostic template after replacing paths, URIs,
+    # credentials and user-supplied token contents, not the raw log.
+    last=""
+    if lines and len(lines)<=12:
+        rawlast=lines[-1].strip()[:1000]
+        if rawlast.startswith(("strata ","strata:","strata generate:","FileExpertSource:")):
+            rawlast=re.sub(r"https?://\S+","<URL>",rawlast)
+            rawlast=re.sub(r"(?:(?:/|~[/\\])[^ \t,:;()\]\[{}]+)","<private-path>",rawlast)
+            rawlast=re.sub(r"(?i)(?:hf_|ghp_|github_pat_)[A-Za-z0-9_]+","<SECRET>",rawlast)
+            rawlast=re.sub(r"[\w.+-]+@[\w.-]+","<email>",rawlast)
+            rawlast=re.sub(r"\b[a-f0-9]{40,}\b","<hex-digest>",rawlast,flags=re.IGNORECASE)
+            last=rawlast[:320]
     return {"exit_log_sha256":sha(log),"log_lines":len(lines),
             "log_bytes":Path(log).stat().st_size,
             "pattern_counts":counts,"safe_categories":categories,
+            "redacted_last_startup_message":last,
             "first_line_length":len(lines[0]) if lines else 0}
 
 def read_summary(log):
