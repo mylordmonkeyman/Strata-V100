@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -34,6 +35,10 @@ struct Device {
     void put(const void* v, size_t n) { ck(cudaMemcpy(p, v, n, cudaMemcpyHostToDevice)); }
 };
 struct Stream { cudaStream_t s{}; Stream() { ck(cudaStreamCreate(&s)); } ~Stream() { cudaStreamDestroy(s); } };
+struct Graph {
+    cudaGraph_t graph{}; cudaGraphExec_t exec{};
+    ~Graph() { if (exec) cudaGraphExecDestroy(exec); if (graph) cudaGraphDestroy(graph); }
+};
 struct Blas {
     cublasHandle_t h{};
     explicit Blas(cudaStream_t s) { blas_ck(cublasCreate(&h)); blas_ck(cublasSetStream(h, s)); blas_ck(cublasSetMathMode(h, CUBLAS_TENSOR_OP_MATH)); }
@@ -78,9 +83,12 @@ int positive_integer(const char* value) {
 } // namespace
 int main(int argc, char** argv) try {
     std::string path, activation_path; int tokens = 8, iterations = 100, qpn_tile = 0;
+    bool validate_graph = false;
     for (int i = 1; i < argc; ++i) {
+        const std::string a(argv[i]);
+        if (a == "--validate-graph") { validate_graph = true; continue; }
         if (i+1 == argc) throw std::invalid_argument("option needs a value");
-        const std::string a(argv[i]); const char* v = argv[++i];
+        const char* v = argv[++i];
         if (a == "--blob") path = v;
         else if (a == "--activations") activation_path = v;
         else if (a == "--tokens") tokens = positive_integer(v);
@@ -146,7 +154,7 @@ int main(int argc, char** argv) try {
     auto reference = project_ref(wd, hr, N, FF, tokens); for (auto& v : reference) v *= tail[2];
     Stream stream; const auto s = stream.s; Blas blas(s);
     Device w(blob.size()), input(x.size()*4), xh(x.size()*2), gh(hr.size()*4), uh(hr.size()*4), hidden(hr.size()*4),
-           hh(hr.size()*2), y(reference.size()*4), wgh(wg.size()*2), wuh(wu.size()*2), wdh(wd.size()*2),
+           hh(hr.size()*2), y(reference.size()*4+256), wgh(wg.size()*2), wuh(wu.size()*2), wdh(wd.size()*2),
            mmgu(size_t(tokens)*2*FF*4), mmx(m::q8_bytes(tokens, N)), mmh(m::q8_bytes(tokens, FF)),
            bounds(8), ids(size_t(tokens)*4), mmwg(2*L.up_off+4096), mmwd(L.up_off+4096);
     w.put(blob.data(), blob.size()); input.put(x.data(), x.size()*4);
@@ -201,6 +209,54 @@ int main(int argc, char** argv) try {
     arms.push_back({"dequant_fp16_cublas",true,[&]{dequant();fp16();},0,{}});
     arms.push_back({"cached_fp16_cublas_control",true,fp16,0,{}});
     for (auto& arm : arms) if (arm.available) { arm.run(); ck(cudaStreamSynchronize(s)); arm.error=relative_error(y,reference); }
+
+    // Optional QPN-only CUDA graph replay and out-of-bounds tail canary checks.
+    // All graph buffers are stable and allocated before stream capture.
+    bool replay_equal=false, changed_input_equal=false, output_guard_ok=false;
+    if (validate_graph) {
+        if (!qpn_ok) throw std::invalid_argument("graph validation requires QPN schedule support");
+        const size_t bytes=reference.size()*sizeof(float);
+        auto* guard_ptr=static_cast<std::uint8_t*>(y.p)+bytes;
+        ck(cudaMemset(guard_ptr,0xa5,256));
+        qpn_run(); ck(cudaStreamSynchronize(s));
+        std::vector<float> expected(reference.size());
+        ck(cudaMemcpy(expected.data(),y.p,bytes,cudaMemcpyDeviceToHost));
+        Graph g;
+        ck(cudaStreamBeginCapture(s,cudaStreamCaptureModeThreadLocal));
+        qpn_run();
+        ck(cudaStreamEndCapture(s,&g.graph));
+        ck(cudaGraphInstantiate(&g.exec,g.graph,nullptr,nullptr,0));
+        ck(cudaMemsetAsync(y.p,0xff,bytes,s));
+        ck(cudaGraphLaunch(g.exec,s)); ck(cudaStreamSynchronize(s));
+        std::vector<float> replay(reference.size());
+        ck(cudaMemcpy(replay.data(),y.p,bytes,cudaMemcpyDeviceToHost));
+        if (std::memcmp(expected.data(),replay.data(),bytes))
+            throw std::runtime_error("QPN CUDA graph replay differs from ordinary execution");
+        replay_equal=true;
+        auto changed=x;
+        for (auto& v:changed) v*=0.5f;
+        input.put(changed.data(),changed.size()*sizeof(float));
+        qpn_run(); ck(cudaStreamSynchronize(s));
+        std::vector<float> changed_expected(reference.size());
+        ck(cudaMemcpy(changed_expected.data(),y.p,bytes,cudaMemcpyDeviceToHost));
+        ck(cudaMemsetAsync(y.p,0xff,bytes,s));
+        ck(cudaGraphLaunch(g.exec,s)); ck(cudaStreamSynchronize(s));
+        std::vector<float> changed_replay(reference.size());
+        ck(cudaMemcpy(changed_replay.data(),y.p,bytes,cudaMemcpyDeviceToHost));
+        if (std::memcmp(changed_expected.data(),changed_replay.data(),bytes))
+            throw std::runtime_error("QPN CUDA graph replay ignores changed input");
+        if (std::any_of(expected.begin(),expected.end(),[](float v){return v!=0.0f;}) &&
+            !std::memcmp(expected.data(),changed_replay.data(),bytes))
+            throw std::runtime_error("QPN graph changed-input replay returned stale output");
+        changed_input_equal=true;
+        input.put(x.data(),x.size()*sizeof(float));
+        qpn_run(); ck(cudaStreamSynchronize(s));
+        std::uint8_t guard[256];
+        ck(cudaMemcpy(guard,guard_ptr,sizeof(guard),cudaMemcpyDeviceToHost));
+        if (!std::all_of(std::begin(guard),std::end(guard),[](std::uint8_t v){return v==0xa5;}))
+            throw std::runtime_error("QPN output tail canary overwritten");
+        output_guard_ok=true;
+    }
     cudaEvent_t a{}, b{}; ck(cudaEventCreate(&a)); ck(cudaEventCreate(&b));
     for (size_t rep = 0; rep < 6; ++rep)
         for (size_t j = 0; j < arms.size(); ++j) {
@@ -221,5 +277,8 @@ int main(int argc, char** argv) try {
         for (size_t j=0;j<arm.us.size();++j) std::printf("%s%.6f",j?",":"",arm.us[j]);
         std::printf("]}");
     }
-    std::printf("]}\n"); return pass?0:1;
+    std::printf("],\\\"graph_checked\\\":%s,\\\"graph_replay_equal\\\":%s,\\\"graph_changed_input_equal\\\":%s,\\\"output_tail_guard_ok\\\":%s}\\n",
+                validate_graph?"true":"false",replay_equal?"true":"false",
+                changed_input_equal?"true":"false",output_guard_ok?"true":"false");
+    return pass?0:1;
 } catch (const std::exception& e) { std::fprintf(stderr,"prefill_bench: %s\n",e.what()); return 2; }
