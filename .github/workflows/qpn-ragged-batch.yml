@@ -1,0 +1,100 @@
+name: QPN experimental ragged batch V100 comparison
+on:
+  push:
+    branches: ['qpn/performance-first']
+    paths:
+      - 'tools/qpn_ragged_batch_probe.cu'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_decode.cu'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_core.cuh'
+      - '.github/workflows/qpn-ragged-batch.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  ragged-gpu:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 65
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build isolated ragged probe and measure full serial vs grouped QPN
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p qpn-ragged-results
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader > qpn-ragged-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-ragged-results/processes-before.txt; then
+            echo 'GPU is in use; refusing overlapping qualification' >&2
+            exit 2
+          fi
+          build="$QPN_STATE_DIR/builds/qpn-gpu-probe"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=OFF
+          cmake --build "$build" --target strata_volta_qpn --parallel 16
+          "$QPN_CUDA_ROOT/bin/nvcc" -O3 -std=c++17 -arch=sm_70 \
+            -Iinclude -Isrc/kernels/cuda tools/qpn_ragged_batch_probe.cu \
+            "$build/libstrata_volta_qpn.a" -lcudart -o "$build/qpn_ragged_batch_probe"
+          "$build/qpn_ragged_batch_probe" > qpn-ragged-results/summary.json
+          python3 -m json.tool qpn-ragged-results/summary.json >/dev/null
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path('qpn-ragged-results/summary.json')
+          d=json.loads(p.read_text())
+          d['source_commit']=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          d['source_sha256']=hashlib.sha256(pathlib.Path('tools/qpn_ragged_batch_probe.cu').read_bytes()).hexdigest()
+          d['binary_sha256']=hashlib.sha256(pathlib.Path('/srv/strata-qpn/builds/qpn-gpu-probe/qpn_ragged_batch_probe').read_bytes()).hexdigest()
+          if d['parity_l2']>1e-6 or d['parity_changed_l2']>1e-6 or not d['guards'] or not d['guards_changed']:
+              raise SystemExit('Ragged routed batch parity/guards failed')
+          p.write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Compute Sanitizer sampled ragged memcheck and racecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${QPN_CUDA_ROOT:=/usr/local/cuda-12.8}"
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          if ! command -v compute-sanitizer >/dev/null; then
+            echo 'Compute Sanitizer unavailable; fail closed' >&2
+            exit 2
+          fi
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          binary="$QPN_STATE_DIR/builds/qpn-gpu-probe/qpn_ragged_batch_probe"
+          compute-sanitizer --tool memcheck --error-exitcode 98 --leak-check no \
+            --log-file qpn-ragged-results/memcheck.log "$binary" --sanitizer \
+            > qpn-ragged-results/memcheck-summary.json
+          compute-sanitizer --tool racecheck --error-exitcode 98 \
+            --log-file qpn-ragged-results/racecheck.log "$binary" --sanitizer \
+            > qpn-ragged-results/racecheck-summary.json
+          grep -Eq 'ERROR SUMMARY: 0 errors' qpn-ragged-results/memcheck.log
+          grep -Eq 'RACECHECK SUMMARY: 0 hazards displayed \(0 errors, 0 warnings\)' qpn-ragged-results/racecheck.log
+          python3 -m json.tool qpn-ragged-results/memcheck-summary.json >/dev/null
+          python3 -m json.tool qpn-ragged-results/racecheck-summary.json >/dev/null
+      - name: Upload scalar diagnostics only (no model or private routes)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-ragged-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-ragged-results/summary.json
+            qpn-ragged-results/memcheck-summary.json
+            qpn-ragged-results/racecheck-summary.json
+            qpn-ragged-results/memcheck.log
+            qpn-ragged-results/racecheck.log
+          if-no-files-found: warn
+          retention-days: 14
