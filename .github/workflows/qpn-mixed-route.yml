@@ -1,0 +1,49 @@
+name: QPN private mixed-routing plan verification
+on:
+  push:
+    branches: ['qpn/mixed-route-bench']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  route-plan:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 30
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40815727472
+          pattern: qpn-m0-*
+          merge-multiple: true
+          path: qpn-baseline-metadata
+      - name: Verify pinned capture hashes, routed-slot ownership and group uniqueness
+        shell: bash
+        run: |
+          set -euo pipefail
+          py="$QPN_STATE_DIR/full-model/venv/bin/python"
+          "$py" -m unittest discover -s tools -p test_qpn_mixed_route_plan.py -v
+          mkdir -p "$QPN_STATE_DIR/mixed-route-plans"
+          "$py" tools/qpn_mixed_route_plan.py \
+            --manifest qpn-baseline-metadata/manifest.json \
+            --captures "$QPN_STATE_DIR/full-model/captures" \
+            --private-dir "$QPN_STATE_DIR/mixed-route-plans/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --summary qpn-mixed-route-results/summary.json
+          test -f qpn-mixed-route-results/summary.json
+      - name: Upload summary only (never private plans, weights or activation bytes)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-mixed-route-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-mixed-route-results/
+          if-no-files-found: warn
+          retention-days: 14
