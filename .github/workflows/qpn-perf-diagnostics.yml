@@ -1,0 +1,102 @@
+name: QPN independent V100 launch and occupancy probe
+on:
+  push:
+    branches: ['qpn/performance-first']
+    paths:
+      - 'tools/qpn_gpu_diagnostics.cu'
+      - '.github/workflows/qpn-perf-diagnostics.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  synthetic-gpu:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 45
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build and run synthetic independent GPU probe (no model data)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p qpn-gpu-probe
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader > qpn-gpu-probe/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-gpu-probe/processes-before.txt; then
+            echo 'GPU has compute clients; no probe was run' >&2
+            exit 2
+          fi
+          build="$QPN_STATE_DIR/builds/qpn-gpu-probe"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=OFF
+          cmake --build "$build" --target strata_volta_qpn --parallel 16
+          "$QPN_CUDA_ROOT/bin/nvcc" -O3 -std=c++17 -arch=sm_70 \
+            -Iinclude -Isrc/kernels/cuda tools/qpn_gpu_diagnostics.cu \
+            "$build/libstrata_volta_qpn.a" -lcudart -o "$build/qpn_gpu_diagnostics"
+          "$build/qpn_gpu_diagnostics" > qpn-gpu-probe/summary.json
+          python3 -m json.tool qpn-gpu-probe/summary.json >/dev/null
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path('qpn-gpu-probe')
+          d=json.loads((p/'summary.json').read_text())
+          d['source_commit']=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          d['source_sha256']=hashlib.sha256(pathlib.Path('tools/qpn_gpu_diagnostics.cu').read_bytes()).hexdigest()
+          d['binary_sha256']=hashlib.sha256(pathlib.Path('/srv/strata-qpn/builds/qpn-gpu-probe/qpn_gpu_diagnostics').read_bytes()).hexdigest()
+          (p/'summary.json').write_text(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+          if command -v ncu >/dev/null 2>&1; then
+            set +e
+            ncu --csv --metrics sm__warps_active.avg.pct_of_peak_sustained_active \
+              --kernel-name 'regex:nvfp4_volta_qpn_gemm_kernel' --launch-count 1 \
+              "$build/qpn_gpu_diagnostics" > qpn-gpu-probe/ncu-private.log 2>&1
+            ncu_status=$?
+            set -e
+            NCU_STATUS="$ncu_status" python3 - <<'PY'
+          import csv,io,json,os,pathlib,re
+          log=pathlib.Path('qpn-gpu-probe/ncu-private.log').read_text(errors='replace')
+          vals=[]
+          for row in csv.reader(io.StringIO(log)):
+              if any('sm__warps_active.avg.pct_of_peak_sustained_active' in c for c in row):
+                  for cell in reversed(row):
+                      try:
+                          v=float(cell.replace(',',''))
+                          if 0<=v<=100: vals.append(v);break
+                      except ValueError:pass
+          status=int(os.environ['NCU_STATUS'])
+          category=('measured' if status==0 and vals else
+                    'permission_denied' if 'ERR_NVGPUCTRPERM' in log else
+                    'profiler_failed_or_metric_unavailable')
+          pathlib.Path('qpn-gpu-probe/ncu-status.json').write_text(json.dumps({
+              'available':True,'exit_code':status,'category':category,
+              'active_warps_pct':vals[:1] if category=='measured' else [],
+              'metric':'sm__warps_active.avg.pct_of_peak_sustained_active',
+              'scope':'first matching synthetic QPN GEMM kernel, not full-model occupancy'
+          },indent=2)+'\n')
+          PY
+          else
+            printf '%s\n' '{"available":false,"category":"ncu_not_installed","active_warps_pct":[]}' > qpn-gpu-probe/ncu-status.json
+          fi
+      - name: Upload synthetic scalar aggregates only (never raw profiler logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-gpu-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-gpu-probe/summary.json
+            qpn-gpu-probe/ncu-status.json
+          if-no-files-found: warn
+          retention-days: 14
