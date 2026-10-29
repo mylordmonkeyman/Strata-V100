@@ -147,16 +147,15 @@ int main(int argc,char** argv) try {
         ck(cudaGetLastError());
     };
     const auto grouped=[&] {
-        gather_ragged<<<(groups*PAD*N+BLOCK-1)/BLOCK,BLOCK,0,s>>>(
-            dx,ids,db,px,groups,-1);
+        q::ragged_gather_half(reinterpret_cast<const std::uint16_t*>(dx),ids,db,
+                               reinterpret_cast<std::uint16_t*>(px),groups,rows,rows,s);
         q::projection_batch(dgu,WGU,reinterpret_cast<const std::uint16_t*>(px),
                             pgu,groups,GU,N,PAD,sched,s);
-        swiglu_ragged<<<(groups*PAD*FF+BLOCK-1)/BLOCK,BLOCK,0,s>>>(
-            pgu,ds,ph,groups,-1);
+        q::ragged_swiglu_stage_half(pgu,ds,
+                                    reinterpret_cast<std::uint16_t*>(ph),groups,s);
         q::projection_batch(dd,WD,reinterpret_cast<const std::uint16_t*>(ph),
                             py,groups,N,FF,PAD,sched,s);
-        scatter_ragged<<<(groups*PAD*N+BLOCK-1)/BLOCK,BLOCK,0,s>>>(
-            py,db,reinterpret_cast<float*>(batch),groups,-1);
+        q::ragged_scatter_f32(py,db,reinterpret_cast<float*>(batch),groups,rows,s);
         ck(cudaGetLastError());
     };
     const auto validate=[&] (bool changed) {
