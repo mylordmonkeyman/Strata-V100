@@ -52,7 +52,7 @@ cmake -S "$src" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF
-cmake --build "$build" --target strata -j 8
+cmake --build "$build" --target strata --parallel 32
 sha256sum "$build/strata" > "$report/binary.sha256"
 # The baseline's converter looks here; CMake has already fetched its exact pin.
 if [[ ! -e "$src/third_party/llama.cpp" ]]; then

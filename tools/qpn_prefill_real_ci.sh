@@ -35,7 +35,7 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_VOLTA_QPN=ON
-cmake --build "$build" --target nvfp4_volta_prefill_bench -j 8
+cmake --build "$build" --target nvfp4_volta_prefill_bench --parallel 32
 numactl --cpunodebind=0 --membind=0 "$py" tools/qpn_prefill_real_run.py \
   --binary "$build/nvfp4_volta_prefill_bench" --fixtures "$fixtures" --out "$report/candidates"
 

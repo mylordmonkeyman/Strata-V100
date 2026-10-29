@@ -30,7 +30,7 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_VOLTA_QPN=ON
-cmake --build "$build" --target nvfp4_volta_mixed_bench -j 8
+cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 32
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
       --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt")

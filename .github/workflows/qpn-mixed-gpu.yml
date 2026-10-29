@@ -23,6 +23,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
     timeout-minutes: 100
     env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '32'
       QPN_STATE_DIR: /srv/strata-qpn
       QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
     steps:

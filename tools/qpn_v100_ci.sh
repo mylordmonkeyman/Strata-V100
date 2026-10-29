@@ -77,7 +77,7 @@ cmake -S . -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
   -DSTRATA_ENABLE_VOLTA_QPN=ON 2>&1 | tee "$report_dir/configure.log"
-cmake --build "$build_dir" --target nvfp4_volta_qpn_bench nvfp4_qpn_host_test -j 8 \
+cmake --build "$build_dir" --target nvfp4_volta_qpn_bench nvfp4_qpn_host_test --parallel 32 \
   2>&1 | tee "$report_dir/build.log"
 ctest --test-dir "$build_dir" -R '^nvfp4_qpn_host$' --output-on-failure \
   2>&1 | tee "$report_dir/host-tests.log"

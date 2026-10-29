@@ -41,6 +41,7 @@ jobs:
     env:
       QPN_CUDA_ROOT: /usr/local/cuda-12.8
       QPN_CI_BUILD_ROOT: /srv/strata-qpn/builds/qpn-ci-compile
+      CMAKE_BUILD_PARALLEL_LEVEL: '32'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +55,7 @@ jobs:
           mkdir -p "$QPN_CI_BUILD_ROOT"
       - name: Configure isolated sm_70 candidate
         run: cmake -S . -B "$QPN_CI_BUILD_ROOT/sm70" -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON
-      - run: cmake --build "$QPN_CI_BUILD_ROOT/sm70" --target strata_volta_qpn -j2
+      - run: cmake --build "$QPN_CI_BUILD_ROOT/sm70" --target strata_volta_qpn --parallel 32
       - name: Configure non-Volta control without QPN
         run: cmake -S . -B "$QPN_CI_BUILD_ROOT/sm80" -G Ninja -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=OFF
       - name: Reject feature on a non-Volta target

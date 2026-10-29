@@ -14,6 +14,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
     timeout-minutes: 180
     env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '32'
       QPN_CUDA_ROOT: ${{ vars.QPN_CUDA_ROOT || '/usr/local/cuda-12.8' }}
       QPN_GPU: ${{ vars.QPN_GPU || '0' }}
       QPN_STATE_DIR: /srv/strata-qpn

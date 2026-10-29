@@ -26,6 +26,7 @@ jobs:
       QPN_STATE_DIR: /srv/strata-qpn
       QPN_CUDA_ROOT: /usr/local/cuda-12.8
       QPN_FIXTURE: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+      CMAKE_BUILD_PARALLEL_LEVEL: '32'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,7 +65,7 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
             -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
             -DSTRATA_ENABLE_VOLTA_QPN=ON
-          cmake --build "$build" --target nvfp4_volta_layout_probe -j 8
+          cmake --build "$build" --target nvfp4_volta_layout_probe --parallel 32
           args=(--weights "$QPN_FIXTURE/weights.bin"
                 --activations "$QPN_FIXTURE/activations.f32"
                 --counts "$QPN_FIXTURE/counts.txt")

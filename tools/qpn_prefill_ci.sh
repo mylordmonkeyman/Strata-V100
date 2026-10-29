@@ -15,7 +15,7 @@ exec 9>"$QPN_STATE_DIR/gpu.lock"
 flock -n 9
 source_key=$(printf '%s' "$(pwd)" | sha256sum | cut -c1-12)
 build_dir="$QPN_STATE_DIR/builds/$source_key"
-cmake --build "$build_dir" --target nvfp4_volta_prefill_bench -j 8
+cmake --build "$build_dir" --target nvfp4_volta_prefill_bench --parallel 32
 shopt -s nullglob
 fixtures=("$QPN_FIXTURE_DIR"/*.bin)
 args=()
