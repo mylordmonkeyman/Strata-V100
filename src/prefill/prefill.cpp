@@ -4252,6 +4252,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         std::vector<int32_t> order, order_peer;
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
                         bool qpn_layer = false;  // declared outside compact_l/else for the later compute lambda
+                        bool qpn_fused_gu = false;  // shared with later group-compute lambda
 #endif
                         if (compact_l) {
                             // EVERY id 0..n_expert-1, count-0 ones included (their bounds are equal): a GROUPS batch
@@ -4289,7 +4290,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // permute its experts without changing that ownership protocol.
                         const bool qpn_execute=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL"));
                         const bool qpn_plan_only=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_PLAN_CONTROL"));
-                        const bool qpn_fused_gu=qpn_execute &&
+                        qpn_fused_gu=qpn_execute &&
                             detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_FUSED_GU"));
                         // Explicit matched-order MMQ control partitions routes but
                         // never invokes QPN. Both knobs are off by default.
