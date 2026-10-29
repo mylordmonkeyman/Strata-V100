@@ -32,7 +32,7 @@ compiles the candidate separately, reuses the **already prepared private**
 Qwen3.8-Flash-Next-FP4-Local checkpoint, native `experts.bin`, identical
 2,048-token captured prompt IDs, and shared binary for both control/opt-in.
 All four trials are separate engine invocations, ABBA to mitigate thermal,
-cache, and trial-order effects. Greedy, speculation off, max-new 16,
+cache, and trial-order effects. Greedy, native verifier window `--spec 2` (required for this pack), no MTP/lookup drafts (`--suffix-draft 0`), max-new 16,
 24 GiB resident expert budget, 48 GiB runner memory cgroup, same GPU
 and CPU affinity. **Prefill 768** is intentional to exercise staged
 nonuniform groups; it is NOT a claim about the default 1,024-token
@@ -52,3 +52,7 @@ performance hypothesis and must not be enabled in production.
 This first experiment does not qualify full default streaming prefill,
 broader quality suite, different prompts, kernel racecheck within the
 full model, or deployment.
+
+## Baseline-compatible verifier setting
+
+The pinned successful M0 manifest from [run 40815727472](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/40815727472) used `--spec 2`, not zero, for its native-expert pack. The first two candidate CI control runs (40946109728 and 40947374667) exited with code 2 in ~1.2 seconds, before inference, because the new A/B harness used `--spec 0`. The verifier-window requirement is enforced by the engine's native-pack startup gate. Keep `--spec 2` with `--suffix-draft 0` and no MTP model to match the baseline's non-drafting behavior. Those failed startups are **not performance results**.

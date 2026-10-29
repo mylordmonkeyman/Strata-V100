@@ -132,7 +132,7 @@ def main():
          "--native-dense-gguf",str(a.prepared/"dense.gguf"),"--ple-gguf",str(a.prepared/"ple-nvfp4.gguf"),
          "--tokens-file",str(tokenfile),"--max-context","4096","--max-new","16","--greedy",
          "--expert-cache","auto","--expert-profile",str(a.source/"data/expert-profile.bin"),
-         "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","0",
+         "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","2",
          "--suffix-draft","0","--adapt-every","0","--vram-reserve-mib","1536","--stats"]
     summary={'schema':1,'scope':'staged 768-row full-model ABBA; not default 1024 stream-all path',
              'source_commit':subprocess.check_output(["git","-C",str(a.source),"rev-parse","HEAD"],text=True).strip(),
