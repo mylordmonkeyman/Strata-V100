@@ -68,6 +68,8 @@ c++ -std=c++20 -O2 -Iinclude tests/nvfp4_qpn_host_test.cpp -o /tmp/nvfp4_qpn_hos
 
 ## Audit and benchmark a real expert
 
+If you do not have a converted pack, use the direct preparation below instead.
+
 Use the **FP4-Local NVFP4-QAD pack**, not another GGUF quant. Replace the pack
 path below with the directory containing `native_experts.txt` and `experts.bin`.
 The audit refuses signed scale bytes, mixed quant formats, unexpected blob
@@ -110,6 +112,43 @@ processes; it never retries within a damaged CUDA context. A result directory
 must be new to avoid mixing runs. JSON contains binary/fixture/activation hashes,
 commands, exit codes, stderr, repetitions, affinity, and GPU state. Commit only
 reviewed measurement logs, never `.bin` fixtures/weights.
+
+## Fixtures without a converted pack
+
+`tools/qpn_extract_hf.py` downloads the checkpoint index and only the shards
+containing the selected experts (default: layer/expert 0/7, 24/300, 47/511).
+The current index places these in three shards, approximately 15 GB total.
+Download size depends on the checkpoint revision/sharding. The helper resolves
+an exact HF commit first and records it, along with fixture/index hashes.
+It reuses `nvfp4_local_pack.py`'s CSF decoder and lossless GGUF rearrangement;
+there is no new quantization, full GGUF/pack, PLE or MTP preparation.
+
+On your host as your normal account, from the repository checkout:
+
+```bash
+python3 -m venv "$HOME/ai/qpn-fixture-venv"
+"$HOME/ai/qpn-fixture-venv/bin/python" -m pip install 'numpy>=2,<3' 'huggingface_hub>=1,<3'
+QPN_FIXTURE_OUT=$(mktemp -d "$HOME/ai/qpn-fixtures.XXXXXX")
+"$HOME/ai/qpn-fixture-venv/bin/python" tools/qpn_extract_hf.py   --source-dir "$HOME/ai/qpn-fp4-source" --out "$QPN_FIXTURE_OUT"
+sudo mkdir -p /srv/strata-qpn/fixtures
+sudo install -m 0640 "$QPN_FIXTURE_OUT"/*.bin /srv/strata-qpn/fixtures/
+sudo install -m 0640 "$QPN_FIXTURE_OUT"/*-audit.json /srv/strata-qpn/fixtures/
+sudo setfacl -R -m u:10001:rX /srv/strata-qpn/fixtures
+```
+
+Run the extraction successfully before copying. The source download directory
+is intentionally only a **partial checkpoint**; do not pass it to full-model
+conversion. No GPU or PyTorch is needed. `--expert LAYER:EXPERT` can be repeated
+to change the picks. `--local-only --source-dir <existing revision directory>`
+works without HF network access if the index and all selected shards exist.
+Existing output files are rejected; a fresh output directory allows reruns
+while cached source shards are reused. For access errors, complete any required
+model access steps on Hugging Face and run `hf auth login` in the same venv.
+
+Dependencies for preparation live in a host venv, not inside the persistent
+GPU runner. Do not upload fixture/activation binaries to GitHub. These fixtures
+support standalone kernel tests; full engine integration will still need the
+complete model preparation and the remaining qualification gates.
 
 ## Limits of these timings
 

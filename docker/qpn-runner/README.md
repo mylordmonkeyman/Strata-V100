@@ -64,10 +64,15 @@ the process remains non-root. This is not a sandbox for untrusted workflows.
 
 ## 3. Fixtures and registration token
 
-Prepare your canonical expert `.bin` fixtures as described in
-[the fixture extraction guide](../../benchmarks/qpn/self-hosted-runner.md#3-prepare-canonical-nvfp4-fixtures-before-starting-the-service).
-They reside on the host at `/srv/strata-qpn/fixtures` and are mounted read-only.
-An empty directory is sufficient for synthetic-only smoke testing.
+If you do not have a converted pack, use
+[direct checkpoint fixture preparation](../../benchmarks/qpn/README.md#fixtures-without-a-converted-pack).
+It downloads only the source shards needed for selected experts and uses the
+existing Strata decoder/rearrangement to create canonical `.bin` fixtures.
+No dense/PLE/MTP conversion or full pack is required for these standalone tests.
+If you already have a pack, the alternative
+[pack extraction guide](../../benchmarks/qpn/self-hosted-runner.md#3-prepare-canonical-nvfp4-fixtures-before-starting-the-service)
+still works. Fixtures reside at `/srv/strata-qpn/fixtures` and are mounted
+read-only. An empty directory is sufficient for synthetic-only smoke testing.
 
 ```bash
 sudo apt-get install -y acl
