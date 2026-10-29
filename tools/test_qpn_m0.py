@@ -5,7 +5,17 @@ from pathlib import Path
 
 import numpy as np
 
-from qpn_m0_bench import capture_summary
+from qpn_m0_bench import capture_summary, native_baseline_argv
+
+
+class NativeBaselineCliTest(unittest.TestCase):
+    def test_native_pack_uses_supported_minimum_spec_window(self):
+        argv = native_baseline_argv(Path('/tmp/strata'), Path('/tmp/prepared'),
+                                    Path('/tmp/tokens.txt'), Path('/tmp/source'))
+        self.assertEqual(argv[argv.index('--spec') + 1], '2')
+        self.assertEqual(argv[argv.index('--suffix-draft') + 1], '0')
+        self.assertEqual(argv[argv.index('--adapt-every') + 1], '0')
+        self.assertEqual(argv[argv.index('--resident-budget-gib') + 1], '24')
 
 
 class CaptureSummaryTest(unittest.TestCase):

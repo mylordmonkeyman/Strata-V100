@@ -9,7 +9,7 @@ It requires at least 250 GiB free disk space. Assets and CPU Python dependencies
 are cached under `/srv/strata-qpn/full-model`. An unused draft pack is not prepared.
 
 Six separate engine invocations use the same 2048-token templated prompt and
-32-token greedy continuation, with speculation disabled. The first is labeled
+32-token greedy continuation, with the minimum native-pack-compatible speculation window (`--spec 2`), no suffix draft model (`--suffix-draft 0`), and adaptation disabled. Native IQ packs reject `--spec 0`, so this is **not** a zero-speculation baseline; any QPN-versus-legacy comparisons must match the same generation settings. The first is labeled
 warmup. Existing instrumentation captures the first prefill chunk's MoE inputs
 and routing at layers 0, 24 and 47 in the first three runs. These captures can
 perturb timings; compare the final three uninstrumented-activation runs separately.

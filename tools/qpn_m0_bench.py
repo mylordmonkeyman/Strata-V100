@@ -41,6 +41,20 @@ def capture_summary(path):
             'activation_dump_sha256':digest(path)}
 
 
+def native_baseline_argv(binary, prepared, token_path, source):
+    """Native IQ pack requires --spec >= 2 even without a suffix draft model.
+
+    Use the smallest supported speculation window and disable suffix drafting
+    and adaptation; candidate comparisons must use identical settings.
+    """
+    return [str(binary),'--pack',str(prepared/'pack'),'--native',str(prepared/'dense.gguf'),
+          '--native-dense-gguf',str(prepared/'dense.gguf'),'--ple-gguf',str(prepared/'ple-nvfp4.gguf'),
+          '--tokens-file',str(token_path),'--max-context','4096','--max-new','32','--greedy',
+          '--expert-cache','auto','--expert-profile',str(source/'data/expert-profile.bin'),
+          '--resident-budget-gib','24','--pool-workers','16','--prefill','1024','--spec','2',
+          '--suffix-draft','0','--adapt-every','0','--vram-reserve-mib','1536','--stats']
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('source','binary','prepared','state','out'): p.add_argument('--'+name,type=Path,required=True)
@@ -63,12 +77,7 @@ def main():
     token_path=a.state/'prompt-2048.txt'; token_path.write_text(','.join(map(str,tokens)))
     env={k:v for k,v in os.environ.items() if not k.startswith('STRATA_')}
     env['STRATA_PREFILL_NVFP4']='w4a8'
-    args=[str(a.binary),'--pack',str(a.prepared/'pack'),'--native',str(a.prepared/'dense.gguf'),
-          '--native-dense-gguf',str(a.prepared/'dense.gguf'),'--ple-gguf',str(a.prepared/'ple-nvfp4.gguf'),
-          '--tokens-file',str(token_path),'--max-context','4096','--max-new','32','--greedy',
-          '--expert-cache','auto','--expert-profile',str(a.source/'data/expert-profile.bin'),
-          '--resident-budget-gib','24','--pool-workers','16','--prefill','1024','--spec','0',
-          '--suffix-draft','0','--adapt-every','0','--vram-reserve-mib','1536','--stats']
+    args=native_baseline_argv(a.binary, a.prepared, token_path, a.source)
     manifest={'baseline_source':'2c9b1dd7bda3102c4a8e65fbe56c45f5c6882926','model_revision':a.revision,
               'binary_sha256':digest(a.binary),'template_sha256':hashlib.sha256(template.source.encode()).hexdigest(),
               'prompt_ids_sha256':digest(token_path),'argv':args,'memory_scope':'48 GiB cgroup; 24 GiB resident expert budget; not full 128 GiB host',
