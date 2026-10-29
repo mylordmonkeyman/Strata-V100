@@ -1,0 +1,93 @@
+name: QPN opt-in staged full-model V100 ABBA qualification
+on:
+  push:
+    branches: ['qpn/full-model-opt-in']
+    paths:
+      - 'src/prefill/prefill.cpp'
+      - 'include/strata/prefill/qpn_experiment_policy.hpp'
+      - 'tests/qpn_prefill_policy_test.cpp'
+      - 'cmake/volta_qpn.cmake'
+      - 'tools/qpn_full_model_ab.py'
+      - '.github/workflows/qpn-full-model-opt-in.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  host-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build and verify host-only QPN route partition
+        run: |
+          cmake -S . -B build-qpn-policy -DSTRATA_ENABLE_CUDA=OFF \
+            -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=ON
+          cmake --build build-qpn-policy --target qpn_prefill_policy_test -j2
+          ctest --test-dir build-qpn-policy -R '^qpn_prefill_policy$' --output-on-failure
+          if cmake -S . -B build-qpn-guard \
+              -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF \
+              -DSTRATA_ENABLE_VOLTA_QPN=OFF \
+              -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON; then
+            echo 'The experimental QPN build guard unexpectedly accepted a CPU-only build'
+            exit 1
+          fi
+  model-ab:
+    needs: [host-policy]
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 150
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+      CUDA_MODULE_LOADING: EAGER
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build isolated candidate and compare opt-out/opt-in on exact same model and prompt
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p qpn-full-model-results
+          exec > >(tee qpn-full-model-results/job.log) 2>&1
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader \
+            > qpn-full-model-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-full-model-results/processes-before.txt; then
+            echo 'GPU already has running compute clients; aborting' >&2
+            exit 2
+          fi
+          source="$QPN_STATE_DIR/full-model"
+          test -f "$source/prepared/pack/experts.bin"
+          test -f "$source/prepared/dense.gguf"
+          test -f "$source/prepared/ple-nvfp4.gguf"
+          test -f "$source/prompt-2048.txt"
+          build="$QPN_STATE_DIR/builds/qpn-full-model-opt-in"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
+          cmake --build "$build" --target strata --parallel 16
+          py="$source/venv/bin/python"
+          test -x "$py"
+          "$py" tools/qpn_full_model_ab.py \
+            --source "$PWD" --binary "$build/strata" --prepared "$source/prepared" \
+            --state "$source" --report qpn-full-model-results --prefill 768 --runs 4
+          "$py" -m json.tool qpn-full-model-results/summary.json >/dev/null
+      - name: Upload numerical/TTFT aggregates only (raw token IDs, raw logits, logs stay private)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-full-model-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-full-model-results/summary.json
+            qpn-full-model-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14
