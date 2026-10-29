@@ -53,3 +53,15 @@ jobs:
           path: qpn-results/
           if-no-files-found: warn
           retention-days: 14
+      - name: Independent prefill crossover
+        if: success() || failure()
+        shell: bash
+        run: bash tools/qpn_prefill_ci.sh
+      - name: Upload prefill measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-prefill-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-prefill-results/
+          if-no-files-found: warn
+          retention-days: 14

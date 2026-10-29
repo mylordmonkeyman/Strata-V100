@@ -65,14 +65,18 @@ trap cleanup EXIT
 nvidia-smi --id="$QPN_GPU" --query-gpu=timestamp,temperature.gpu,clocks.sm,clocks.mem,power.draw,pstate --format=csv --loop=1 > "$report_dir/telemetry.csv" &
 monitor_pid=$!
 
-cmake -S . -B build-qpn-v100 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+source_key=$(printf '%s' "$(pwd)" | sha256sum | cut -c1-12)
+build_dir="$QPN_STATE_DIR/builds/$source_key"
+mkdir -p "$build_dir"
+printf '%s\n' "$build_dir" > "$report_dir/build-directory.txt"
+cmake -S . -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
   -DSTRATA_ENABLE_VOLTA_QPN=ON 2>&1 | tee "$report_dir/configure.log"
-cmake --build build-qpn-v100 --target nvfp4_volta_qpn_bench nvfp4_qpn_host_test -j 8 \
+cmake --build "$build_dir" --target nvfp4_volta_qpn_bench nvfp4_qpn_host_test -j 8 \
   2>&1 | tee "$report_dir/build.log"
-ctest --test-dir build-qpn-v100 -R '^nvfp4_qpn_host$' --output-on-failure \
+ctest --test-dir "$build_dir" -R '^nvfp4_qpn_host$' --output-on-failure \
   2>&1 | tee "$report_dir/host-tests.log"
 python3 -m unittest discover -s tools -p test_qpn_audit.py -v 2>&1 | tee "$report_dir/audit-tests.log"
 
@@ -86,7 +90,7 @@ run_checked() {
   printf '%s\t%d\n' "$name" "$rc" >> "$report_dir/exit-codes.tsv"
   if (( rc != 0 )); then failures=$((failures + 1)); fi
 }
-bench="$(pwd)/build-qpn-v100/nvfp4_volta_qpn_bench"
+bench="$build_dir/nvfp4_volta_qpn_bench"
 binding=(numactl --cpunodebind=0 --membind=0)
 run_checked synthetic "${binding[@]}" python3 tools/qpn_run.py "$bench" \
   --out "$report_dir/synthetic" --iterations 10 --tokens 1 2 3 4 5 8 9 16 17 32
@@ -95,6 +99,11 @@ run_checked synthetic "${binding[@]}" python3 tools/qpn_run.py "$bench" \
 # The whole pack is neither required nor read by the runner account.
 shopt -s nullglob
 fixtures=("$QPN_FIXTURE_DIR"/*.bin)
+provenance=("$QPN_FIXTURE_DIR"/*-audit.json)
+if (( ${#provenance[@]} > 0 )); then
+  mkdir -p "$report_dir/fixture-provenance"
+  cp -- "${provenance[@]}" "$report_dir/fixture-provenance/"
+fi
 real_args=()
 for blob in "${fixtures[@]}"; do real_args+=(--blob "$blob"); done
 if (( ${#fixtures[@]} > 0 )); then

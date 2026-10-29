@@ -54,18 +54,30 @@ __global__ void probe_kernel(float* output) {
     }
 #endif
 }
+__global__ void pair_probe_kernel(float* output) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 700
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if (i<128*256) {
+        const unsigned pair=(i&15u)|(((i>>4)&15u)<<16);
+        const half2 values=__hmul2(detail::decode_pair(pair),__float2half2_rn(detail::decode_scale(i/256)));
+        const float2 v=__half22float2(values); output[2*i]=v.x; output[2*i+1]=v.y;
+    }
+#endif
+}
 template<int Tiles, int Split, int Acc>
 void launch(const std::uint8_t* w, const std::uint16_t* x, float* y,
-            int n, int k, int t, cudaStream_t stream) {
+            int n, int k, int t, int decoder, cudaStream_t stream) {
     // Only sm_70 code is emitted for this standalone library.
-    detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc><<<n / 32, Split * 32, 0, stream>>>(
-        w, reinterpret_cast<const half*>(x), n, k, t, y);
+    if (decoder == 1)
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, true><<<n / 32, Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y);
+    else
+        detail::nvfp4_volta_qpn_gemm_kernel<Tiles, Split, Acc, false><<<n / 32, Split * 32, 0, stream>>>(w, reinterpret_cast<const half*>(x), n, k, t, y);
 }
 template<int Tiles, int Split>
 void launch_acc(const std::uint8_t* w, const std::uint16_t* x, float* y,
                 int n, int k, int t, Schedule s, cudaStream_t stream) {
-    if (s.accumulators == 1) launch<Tiles, Split, 1>(w, x, y, n, k, t, stream);
-    else launch<Tiles, Split, 2>(w, x, y, n, k, t, stream);
+    if (s.accumulators == 1) launch<Tiles, Split, 1>(w, x, y, n, k, t, s.decoder, stream);
+    else launch<Tiles, Split, 2>(w, x, y, n, k, t, s.decoder, stream);
 }
 template<int Tiles>
 void launch_split(const std::uint8_t* w, const std::uint16_t* x, float* y,
@@ -105,5 +117,8 @@ void scale_down(float* output, const float* tail, std::size_t count, void* strea
 }
 void decoder_probe(float* output, void* stream) {
     probe_kernel<<<8, 256, 0, static_cast<cudaStream_t>(stream)>>>(output); check();
+}
+void decoder_pair_probe(float* output, void* stream) {
+    pair_probe_kernel<<<128,256,0,static_cast<cudaStream_t>(stream)>>>(output); check();
 }
 } // namespace strata::kernels::qpn

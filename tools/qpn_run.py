@@ -47,6 +47,7 @@ def main():
     p.add_argument("--iterations", type=int, default=100)
     p.add_argument("--sweep", action="store_true", help="all supported split/acc and input/hidden staging choices")
     p.add_argument("--tokens", type=int, nargs="+", default=[1, 2, 3, 4, 8, 16, 32])
+    p.add_argument("--decoders", type=int, nargs="+", choices=[0, 1], default=[0, 1])
     args = p.parse_args()
     if args.iterations < 1 or any(t < 1 or t > 32 for t in args.tokens):
         p.error("iterations > 0, tokens 1..32 required")
@@ -66,14 +67,14 @@ def main():
                 "warning": "single expert working set may fit V100 L2; NOT a multi-expert residency benchmark"}
     (args.out / "metadata.json").write_text(json.dumps(metadata, indent=2))
     rows = []
-    for blob, t in itertools.product(blobs or [None], args.tokens):
+    for blob, t, decoder in itertools.product(blobs or [None], args.tokens, args.decoders):
         schedules = itertools.product([4, 8, 16], [4, 8], [1, 2], [False, True], [False, True]) if args.sweep else [
             (4, 4, 1, False, False), (4, 4, 1, True, True)]
         for gu, down, acc, input_q8, hidden_q8 in schedules:
             if t > 16 and gu == 16:
                 continue  # exceeds 48 KiB static shared memory
             argv = [str(binary), "--tokens", str(t), "--iterations", str(args.iterations),
-                    "--split-gu", str(gu), "--split-down", str(down), "--acc", str(acc)]
+                    "--split-gu", str(gu), "--split-down", str(down), "--acc", str(acc), "--decoder", str(decoder)]
             if blob:
                 argv += ["--blob", str(blob)]
             if args.activations:
@@ -82,7 +83,7 @@ def main():
                 argv.append("--input-q8")
             if hidden_q8:
                 argv.append("--hidden-q8")
-            print(f"candidate {len(rows)+1}: T={t} GU={gu} down={down} acc={acc} input_q8={input_q8} hidden_q8={hidden_q8}", flush=True)
+            print(f"candidate {len(rows)+1}: T={t} GU={gu} down={down} acc={acc} decoder={decoder} input_q8={input_q8} hidden_q8={hidden_q8}", flush=True)
             result = command(argv)
             try:
                 measurement = json.loads(result["stdout"])

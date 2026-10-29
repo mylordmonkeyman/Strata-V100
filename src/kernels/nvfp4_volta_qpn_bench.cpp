@@ -88,7 +88,7 @@ int integer(const std::string& value) {
 
 int main(int argc, char** argv) try {
     std::string blob_path, activation_path;
-    int tokens = 8, iterations = 100, sk_gu = 4, sk_down = 4, acc = 1;
+    int tokens = 8, iterations = 100, sk_gu = 4, sk_down = 4, acc = 1, decoder = 0;
     bool input_q8 = false, hidden_q8 = false;
     for (int a = 1; a < argc; ++a) {
         const std::string arg = argv[a];
@@ -103,6 +103,7 @@ int main(int argc, char** argv) try {
         else if (arg == "--split-gu") sk_gu = integer(value);
         else if (arg == "--split-down") sk_down = integer(value);
         else if (arg == "--acc") acc = integer(value);
+        else if (arg == "--decoder") decoder = integer(value);
         else throw std::invalid_argument("unknown option: " + arg);
     }
     constexpr int N = 2560, FF = 640, guard = 64;
@@ -110,7 +111,7 @@ int main(int argc, char** argv) try {
     int device = 0; ck(cudaGetDevice(&device));
     cudaDeviceProp prop{}; ck(cudaGetDeviceProperties(&prop, device));
     const int cc = prop.major * 10 + prop.minor;
-    const q::Schedule gu{sk_gu, acc}, down{sk_down, acc};
+    const q::Schedule gu{sk_gu, acc, decoder}, down{sk_down, acc, decoder};
     if (!q::supported(cc, FF, N, tokens, gu) || !q::supported(cc, N, FF, tokens, down) || iterations < 1)
         throw std::invalid_argument("requires sm_70, tokens 1..32 and valid projection-specific split/acc settings");
     std::fprintf(stderr, "device=%s tokens=%d fixture=%s input=%s hidden=%s\n", prop.name, tokens,
@@ -180,6 +181,13 @@ int main(int argc, char** argv) try {
             const float want = q::code_value(code) * q::scale_value(sc), got = decoded[sc*16+code];
             if (got != want || std::signbit(got) != std::signbit(want)) throw std::runtime_error("device decoder/sign-zero parity");
         }
+    Device pairs(65536*sizeof(float)); q::decoder_pair_probe(pairs.as<float>(), s); ck(cudaStreamSynchronize(s));
+    const auto decoded_pairs=download(pairs.as<float>(),65536);
+    for (int sc=0;sc<128;++sc) for (int pair=0;pair<256;++pair) for (int lane=0;lane<2;++lane) {
+        const float want=q::code_value((pair>>(lane*4))&15)*q::scale_value(sc);
+        const float got_pair=decoded_pairs[(sc*256+pair)*2+lane];
+        if (got_pair!=want || std::signbit(got_pair)!=std::signbit(want)) throw std::runtime_error("fast decoder pair/sign-zero parity");
+    }
     auto* y = out.as<float>() + guard;
     const auto* scales = reinterpret_cast<const float*>(db.as<std::uint8_t>() + L.tail_off);
     auto quant_input = [&] { k::quantize_q8_1_rows(dx.as<float>(), tokens, N, xq.p, s); };
@@ -246,13 +254,13 @@ int main(int argc, char** argv) try {
         for (int arm = 0; arm < 2; ++arm) { const int which = (rep+arm)%2; times[which][rep] = timed(which == 1); }
     const bool pass = eg.l2 <= .02 && eu.l2 <= .02 && ed.l2 <= .02 && ey.l2 <= .03;
     std::printf("{\"tokens\":%d,\"fixture\":\"%s\",\"input_q8\":%s,\"hidden_q8\":%s,"
-                "\"split_gu\":%d,\"split_down\":%d,\"acc\":%d,\"iterations\":%d,"
+                "\"split_gu\":%d,\"split_down\":%d,\"acc\":%d,\"iterations\":%d,\"decoder\":%d,"
                 "\"gate_l2\":%.9g,\"up_l2\":%.9g,\"down_l2\":%.9g,\"expert_l2\":%.9g,\"baseline_l2\":%.9g,"
                 "\"input_staging_l2\":%.9g,\"hidden_staging_l2\":%.9g,"
                 "\"gate_mma_l2\":%.9g,\"up_mma_l2\":%.9g,\"down_mma_l2\":%.9g,"
                 "\"expert_max_abs\":%.9g,\"graph_replay_equal\":true,\"output_guards_ok\":true,\"numerics_pass\":%s,",
                 tokens, blob_path.empty() ? "synthetic" : "real", input_q8 ? "true" : "false", hidden_q8 ? "true" : "false",
-                sk_gu, sk_down, acc, iterations, eg.l2, eu.l2, ed.l2, ey.l2, eb.l2,
+                sk_gu, sk_down, acc, iterations, decoder, eg.l2, eu.l2, ed.l2, ey.l2, eb.l2,
                 input_rounding.l2, hidden_rounding.l2, eg_mma.l2, eu_mma.l2, ed_mma.l2,
                 ey.maximum, pass ? "true" : "false");
     for (int arm = 0; arm < 2; ++arm) {

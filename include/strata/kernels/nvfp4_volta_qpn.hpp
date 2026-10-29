@@ -30,12 +30,12 @@ inline float weight_value(const std::uint8_t* row, int k) {
     return code_value(code) * scale_value(block[sub]);
 }
 
-struct Schedule { int split_k = 4; int accumulators = 1; };
+struct Schedule { int split_k = 4; int accumulators = 1; int decoder = 0; };
 inline bool supported(int cc, int n, int k, int tokens, Schedule s) {
     return cc == 70 && n > 0 && n % 128 == 0 && k > 0 && k % 64 == 0 &&
            tokens >= 1 && tokens <= max_tokens &&
            (s.split_k == 4 || s.split_k == 8 || s.split_k == 16) &&
-           k / 64 >= s.split_k && (s.accumulators == 1 || s.accumulators == 2) &&
+           k / 64 >= s.split_k && (s.accumulators == 1 || s.accumulators == 2) && (s.decoder == 0 || s.decoder == 1) &&
            s.split_k * ((tokens + 7) / 8 <= 1 ? 1 : tokens <= 16 ? 2 : 4) * 1024 <= 49152;
 }
 
@@ -55,4 +55,6 @@ void swiglu(const float* gate, const float* up, const float* tail,
 void scale_down(float* output, const float* tail, std::size_t count, void* stream);
 // Standalone qualification probe: output[scale*16+code], 128 canonical scales.
 void decoder_probe(float* output, void* stream);
+// Exhaustive fast decoder: output[(scale*256+pair)*2+lane], 65536 floats.
+void decoder_pair_probe(float* output, void* stream);
 } // namespace strata::kernels::qpn

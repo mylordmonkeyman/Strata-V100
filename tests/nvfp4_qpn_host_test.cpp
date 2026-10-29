@@ -51,5 +51,7 @@ int main() {
     require(!q::supported(70, 640, 639, 8, {}), "K geometry");
     require(!q::supported(70, 640, 2560, 8, {3, 1}), "split bounds");
     require(!q::supported(70, 640, 2560, 8, {4, 3}), "accumulator bounds");
+    require(q::supported(70, 640, 2560, 8, {4, 1, 1}), "fast decoder eligibility");
+    require(!q::supported(70, 640, 2560, 8, {4, 1, 2}), "decoder bounds");
     std::puts("NVFP4 QPN host format/schedule tests passed");
 }

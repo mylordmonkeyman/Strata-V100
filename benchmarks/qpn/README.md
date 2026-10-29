@@ -14,6 +14,12 @@ M0 still needs real-model/hardware data. M1/M2 have a compilable candidate and
 tools, **not passed gates**. M3, M4 runtime integration, M5 packed layout, and
 M6 defaults are not implemented. Decode and prefill remain independent tracks.
 
+**First V100 data:** [scalar direct-layout report](results/first-v100/README.md).
+All 80 numerical cases and nine sanitizer runs passed, but the scalar QPN
+candidate was 3.5–7.2× slower than legacy grouped execution on these fixtures.
+It is rejected for production dispatch. `--decoder 1` is the next independent
+register-LUT/vector-load candidate; `--decoder 0` retains the measured control.
+
 ## What is implemented
 
 - QPN direct GGUF reads: four scale bytes followed by four split-half 16-value
@@ -152,6 +158,20 @@ complete model preparation and the remaining qualification gates.
 
 ## Limits of these timings
 
+The automated workflow now runs decode and prefill as independent phases,
+uploading the decode artifact before building/running prefill. Its build tree
+lives in the runner's persistent state volume so checkout cleanup does not
+discard all CUDA objects on each revision.
+
+`nvfp4_volta_prefill_bench` compares completed expert execution at 1–512 rows:
+QPN (only up to 32), actual eligible `NVFP4 W4A8 MMQ` including canonical gather,
+and dequantize→FP16/cuBLAS with FP32 global scale placement. A cached-FP16-weight
+control is also reported but cannot win the automatic crossover selection,
+because it consumes additional residency. MMQ eligibility is probed at runtime;
+unsupported arms are reported as unavailable. Inputs are Gaussian and weights
+are a single expert. This is a crossover experiment, not prompt TTFT or the
+full M4 gate. The FP16 reference does not fold tiny global scales into weights.
+
 Times include input staging, gate/up, FP32 SwiGLU, hidden staging, down and
 FP32 down scale. The legacy arm includes input Q8_1 quantization; the Q8 input
 candidate includes it too. Production may already have that Q8 image: these
@@ -161,8 +181,7 @@ checked separately; timed rounds use normal launches in both arms.
 
 A single 2.76 MB expert may fit V100 L2. This first harness does not simulate
 many-expert working sets or mixed group histograms, measure routing/cache/CPU/
-PCIe waits, count accepted draft tokens, implement MMQ/FP16-GEMM prefill arms,
-or establish model-level accuracy. It has output sentinels, not guards around
+PCIe waits, count accepted draft tokens, or establish model-level accuracy. The separate prefill harness adds MMQ/FP16 comparators. It has output sentinels, not guards around
 every scratch allocation. Sanitizers remain mandatory. No throughput or TTFT
 claim follows from a green synthetic run.
 
@@ -197,7 +216,8 @@ or add cache repacking on the basis of this prototype.
 
 ## What did not improve / pending evidence
 
-No runtime speed, TTFT, accuracy, cache residency, or model acceptance result
-was obtained in the development workspace because it has no NVIDIA device or
-model pack. The candidate is intentionally absent from the engine link graph.
+The first remote V100 run obtained numerical/sanitizer passes and a negative
+speed result for the scalar candidate. No TTFT, model accuracy/acceptance or
+cache-residency conclusion follows. The local development workspace still
+has no NVIDIA device. The candidate remains absent from the engine link graph.
 See [development validation](development-validation.md) for checks actually run.

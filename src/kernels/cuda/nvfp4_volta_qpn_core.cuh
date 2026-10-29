@@ -30,6 +30,21 @@ __device__ __forceinline__ float decode_code(unsigned b) {
     const unsigned normal = ((mag / 2 + 14) << 10) | ((mag & 1u) << 9);
     return __half2float(__ushort_as_half((b & 8 ? 0x8000u : 0u) | (mag < 2 ? bits : normal)));
 }
+// Independent E2M1 lookup in registers. LUT bytes are the upper bytes of the
+// eight positive FP16 bit patterns; their low bytes are all zero. PRMT inserts
+// literal zero bytes via LUT entry 0 and signs are ORed into FP16 sign bits.
+// Input nibbles occupy bits 0..3 and 16..19. No FP32 conversion or rebias.
+__device__ __forceinline__ half2 decode_pair(unsigned pair) {
+    const unsigned selectors = ((pair & 7u) << 4) | ((pair >> 4) & 0x7000u);
+    unsigned bits = __byte_perm(0x3e3c3800u, 0x46444240u, selectors) | ((pair & 0x00080008u) << 12);
+    return *reinterpret_cast<half2*>(&bits);
+}
+__device__ __forceinline__ void stage_pairs(const uint4& v, half2* a) {
+    unsigned bits[4] = {__byte_perm(v.x,v.z,0x5410), __byte_perm(v.x,v.z,0x7632),
+                        __byte_perm(v.y,v.w,0x5410), __byte_perm(v.y,v.w,0x7632)};
+#pragma unroll
+    for (int j=0;j<4;++j) a[j]=*reinterpret_cast<half2*>(&bits[j]);
+}
 __device__ __forceinline__ void volta_mma_qp_n(float (&d)[8], unsigned a0, unsigned a1,
                                                unsigned b0, unsigned b1) {
     asm volatile("mma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32 "
@@ -39,7 +54,7 @@ __device__ __forceinline__ void volta_mma_qp_n(float (&d)[8], unsigned a0, unsig
                    "+f"(d[6]), "+f"(d[7])
                  : "r"(a0), "r"(a1), "r"(b0), "r"(b1));
 }
-template <int kTiles, int SPLITK, int NACC>
+template <int kTiles, int SPLITK, int NACC, bool Fast>
 __global__ __launch_bounds__(
     SPLITK * 32, (kTiles == 1 ? 32 : kTiles == 2 ? 16 : 4) / SPLITK < 1
         ? 1
@@ -87,12 +102,25 @@ __global__ __launch_bounds__(
             const half2 sc2 = __float2half2_rn(decode_scale(block[g]));
             const std::uint8_t* qs = block + 4 + g * 8;
             half2 b[8];
+            if constexpr (Fast) {
+                // A GGUF sub-block is 4-byte aligned, not necessarily 8-byte
+                // aligned: use two U32 loads, never an unaligned uint2/uint4.
+                const unsigned lo=__ldg(reinterpret_cast<const unsigned*>(qs));
+                const unsigned hi=__ldg(reinterpret_cast<const unsigned*>(qs+4));
+#pragma unroll
+                for (int j=0;j<4;++j) {
+                    const unsigned pair=__byte_perm(lo,hi,unsigned(j)|((unsigned(j)+4)<<8));
+                    b[j]=__hmul2(decode_pair(pair),sc2);
+                    b[j+4]=__hmul2(decode_pair(pair>>4),sc2);
+                }
+            } else {
 #pragma unroll
             for (int j = 0; j < 8; ++j) {
                 const int shift = j < 4 ? 0 : 4;
                 const int q = j & 3;
                 b[j] = __hmul2(__floats2half2_rn(decode_code((qs[q] >> shift) & 15),
                                                    decode_code((qs[q+4] >> shift) & 15)), sc2);
+            }
             }
             const unsigned* B = reinterpret_cast<const unsigned*>(b);
             const int kbase   = st * S::kChunkK + g * S::kGroupK;
@@ -103,10 +131,16 @@ __global__ __launch_bounds__(
                 half2 a[8];
                 if (row < t) {
                     const half* xrow = x + static_cast<std::int64_t>(row) * k + kbase;
+                    if constexpr (Fast) {
+                        const uint4 v0=*reinterpret_cast<const uint4*>(xrow);
+                        const uint4 v1=*reinterpret_cast<const uint4*>(xrow+8);
+                        stage_pairs(v0,&a[0]); stage_pairs(v1,&a[4]);
+                    } else {
 #pragma unroll
                     for (int j = 0; j < 8; ++j) {
                         const int base = j < 4 ? 0 : 8;
                         a[j] = __halves2half2(xrow[base + (j & 3)], xrow[base + (j & 3) + 4]);
+                    }
                     }
                 } else {
 #pragma unroll
