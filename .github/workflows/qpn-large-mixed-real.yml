@@ -1,0 +1,54 @@
+name: QPN real 33-128-row hybrid vs MMQ qualification
+on:
+  push:
+    branches: ['qpn/large-route-probe']
+    paths:
+      - 'src/kernels/nvfp4_volta_mixed_bench.cpp'
+      - 'tools/qpn_large_mixed_gpu_ci.sh'
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_core.cuh'
+      - 'src/kernels/cuda/nvfp4_volta_qpn_decode.cu'
+      - '.github/workflows/qpn-large-mixed-real.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  mixed-real:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 100
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '16'
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40908922475
+          name: qpn-mixed-fixture-40908922475-1
+          path: pinned-mixed-summary
+      - name: Verify pinned real captures and compare QPN T33-128 vs W4A8/MMQ
+        shell: bash
+        run: bash tools/qpn_large_mixed_gpu_ci.sh
+      - name: Upload aggregates only (never raw capture, weights or full logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-large-mixed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-large-mixed-results/provenance.json
+            qpn-large-mixed-results/measurement-min33.json
+            qpn-large-mixed-results/memcheck-measurement-min33.json
+            qpn-large-mixed-results/racecheck-measurement-min33.json
+            qpn-large-mixed-results/memcheck-min33.log
+            qpn-large-mixed-results/racecheck-min33.log
+            qpn-large-mixed-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14
