@@ -77,23 +77,36 @@ int main() try {
                 prop.multiProcessorCount,prop.maxThreadsPerMultiProcessor/32,threads,
                 attrs.numRegs,size_t(attrs.sharedSizeBytes),max_blocks,
                 noop.gpu_us,noop.host_enqueue_us);
-    for (int t : {17,24,32}) {
-        const q::Schedule sched{4,1,1,16};
+    bool first_case=true;
+    for (int t : {17,24,32}) for (int token_tile : {8,16}) {
+        const q::Schedule sched{4,1,1,token_tile};
+        Kernel case_kernel = token_tile==8
+            ? &d::nvfp4_volta_qpn_gemm_kernel<1,4,1,true,false>
+            : &d::nvfp4_volta_qpn_gemm_kernel<2,4,1,true,false>;
+        cudaFuncAttributes case_attrs{};
+        ck(cudaFuncGetAttributes(&case_attrs,case_kernel));
+        int case_max_blocks=0;
+        ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+            &case_max_blocks,case_kernel,threads,0));
         auto gu_fn=[&]{q::projection(wgu,x,gu,2*FF,N,t,sched,s);};
         auto down_fn=[&]{q::projection(wd,h,y,N,FF,t,sched,s);};
         const Timing g=measure(s,gu_fn,iters), down=measure(s,down_fn,iters);
-        const int gu_ctas=(2*FF/32)*((t+tile-1)/tile);
-        const int down_ctas=(N/32)*((t+tile-1)/tile);
+        const int gu_ctas=(2*FF/32)*((t+token_tile-1)/token_tile);
+        const int down_ctas=(N/32)*((t+token_tile-1)/token_tile);
         const auto cap=[&](int ctas) {
-            return 100.0*std::min(double(max_blocks),double(ctas)/prop.multiProcessorCount)*
+            return 100.0*std::min(double(case_max_blocks),double(ctas)/prop.multiProcessorCount)*
                 warps/(prop.maxThreadsPerMultiProcessor/32);
         };
-        std::printf("%s{\"tokens\":%d,\"gu_ctas\":%d,\"down_ctas\":%d,"
+        std::printf("%s{\"tokens\":%d,\"tile\":%d,\"tile_max_blocks_per_sm\":%d,"
+                    "\"tile_registers_per_thread\":%d,\"tile_static_shared_bytes\":%zu,"
+                    "\"gu_ctas\":%d,\"down_ctas\":%d,"
                     "\"gu_warp_capacity_estimate_pct\":%.4f,\"down_warp_capacity_estimate_pct\":%.4f,"
                     "\"gu_gpu_timeline_us\":%.5f,\"down_gpu_timeline_us\":%.5f,"
                     "\"gu_host_enqueue_us\":%.5f,\"down_host_enqueue_us\":%.5f}",
-                    t==17?"":",",t,gu_ctas,down_ctas,cap(gu_ctas),cap(down_ctas),
+                    first_case?"":",",t,token_tile,case_max_blocks,case_attrs.numRegs,
+                    size_t(case_attrs.sharedSizeBytes),gu_ctas,down_ctas,cap(gu_ctas),cap(down_ctas),
                     g.gpu_us,down.gpu_us,g.host_enqueue_us,down.host_enqueue_us);
+        first_case=false;
     }
     std::printf("]}\n");
     ck(cudaStreamSynchronize(s));
