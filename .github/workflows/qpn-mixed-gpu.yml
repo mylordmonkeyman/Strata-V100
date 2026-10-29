@@ -16,6 +16,7 @@ permissions:
 concurrency:
   group: strata-qpn-v100
   cancel-in-progress: false
+  queue: max
 jobs:
   grouped:
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'

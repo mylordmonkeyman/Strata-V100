@@ -2,12 +2,19 @@ name: QPN private nonuniform GPU fixture preparation
 on:
   push:
     branches: ['qpn/mixed-route-bench']
+    paths:
+      - 'tools/qpn_mixed_gpu_fixture.py'
+      - 'tools/test_qpn_mixed_gpu_fixture.py'
+      - 'tools/qpn_mixed_route_plan.py'
+      - 'tools/qpn_audit.py'
+      - '.github/workflows/qpn-mixed-fixture.yml'
 permissions:
   contents: read
   actions: read
 concurrency:
   group: strata-qpn-v100
   cancel-in-progress: false
+  queue: max
 jobs:
   fixture:
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'

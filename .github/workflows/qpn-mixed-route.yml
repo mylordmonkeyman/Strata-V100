@@ -2,12 +2,18 @@ name: QPN private mixed-routing plan verification
 on:
   push:
     branches: ['qpn/mixed-route-bench']
+    paths:
+      - 'tools/qpn_mixed_route_plan.py'
+      - 'tools/test_qpn_mixed_route_plan.py'
+      - 'tools/qpn_audit.py'
+      - '.github/workflows/qpn-mixed-route.yml'
 permissions:
   contents: read
   actions: read
 concurrency:
   group: strata-qpn-v100
   cancel-in-progress: false
+  queue: max
 jobs:
   route-plan:
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
