@@ -165,22 +165,22 @@ int main(int argc,char** argv)try{
     // Offline partition of the SAME private real expert rows and weights
     // for both arms: MMQ fallback prefix then selected QPN candidates.
     // This is NOT the full-model production dispatcher.
-    const auto candidate=[&](int n) {
+    const auto qpn_large_candidate=[&](int n) {
         if(qpn_min==17)return n>=17&&n<=32;
         if(qpn_min==33)return n>=33&&n<=qpn_max;
         if(qpn_min==129)return n>=129&&n<=qpn_max;
         return n<=32;
     };
     const int candidates=(qpn_min==1)?10:
-        int(std::count_if(counts.begin(),counts.end(),candidate));
+        int(std::count_if(counts.begin(),counts.end(),qpn_large_candidate));
     if(qpn_min==129 && candidates!=2)
         throw std::runtime_error("expected exactly 187 and 508 real routed rows");
     if(qpn_min==33 && qpn_max==512 && candidates!=6)
         throw std::runtime_error("expected exactly six real T33..512 experts");
     if(qpn_min==17 || qpn_min==33 || qpn_min==129){
         std::vector<int> order;
-        for(int i=0;i<E;i++)if(!candidate(counts[i]))order.push_back(i);
-        for(int i=0;i<E;i++)if(candidate(counts[i]))order.push_back(i);
+        for(int i=0;i<E;i++)if(!qpn_large_candidate(counts[i]))order.push_back(i);
+        for(int i=0;i<E;i++)if(qpn_large_candidate(counts[i]))order.push_back(i);
         if(order.size()!=E)throw std::runtime_error("group permutation misses experts");
         std::array<int,E+1> original{};
         for(int i=0;i<E;i++)original[i+1]=original[i]+counts[i];
@@ -203,8 +203,8 @@ int main(int argc,char** argv)try{
     for(int i=0;i<E;i++)bounds[i+1]=bounds[i]+counts[i];
     const int fallback_rows=bounds[fallback_groups],small=rows-fallback_rows;
     if(qpn_min!=1 &&
-       (std::any_of(counts.begin(),counts.begin()+fallback_groups,candidate) ||
-        !std::all_of(counts.begin()+fallback_groups,counts.end(),candidate)))
+       (std::any_of(counts.begin(),counts.begin()+fallback_groups,qpn_large_candidate) ||
+        !std::all_of(counts.begin()+fallback_groups,counts.end(),qpn_large_candidate)))
         throw std::runtime_error("selected large-row mixed partition broken");
     std::vector<float> x(size_t(rows)*N);
     std::memcpy(x.data(),host_x.data(),host_x.size());
