@@ -1,0 +1,32 @@
+name: QPN M0 routing-headroom audit
+on:
+  push:
+    branches: ['qpn/routing-headroom']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test exact routing counts, bucket boundaries and provenance guards
+        run: python3 -m unittest discover -s tools -p test_qpn_routing_headroom.py -v
+      - name: Download pinned baseline metadata without model or activation bytes
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40815727472
+          pattern: qpn-m0-*
+          merge-multiple: true
+          path: qpn-baseline-metadata
+      - name: Audit routing histogram from exact checkpoint captures
+        run: python3 tools/qpn_routing_headroom.py --manifest qpn-baseline-metadata/manifest.json --out routing-headroom-results/headroom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qpn-routing-headroom-${{ github.run_id }}
+          path: routing-headroom-results/
+          retention-days: 14
