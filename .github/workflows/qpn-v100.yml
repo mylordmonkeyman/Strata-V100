@@ -1,0 +1,55 @@
+name: QPN V100 local runner
+
+# No pull_request / pull_request_target trigger on this persistent GPU host.
+# The push trigger bootstraps this workflow while main still mirrors upstream.
+on:
+  push:
+    branches: ['qpn/direct-prototype']
+  workflow_dispatch:
+    inputs:
+      sweep:
+        description: Run the full schedule/staging sweep (can take hours)
+        type: boolean
+        default: false
+      sanitizers:
+        description: Run Compute Sanitizer after benchmarks
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: >-
+      github.repository == 'mylordmonkeyman/Strata-V100' &&
+      github.actor == 'mylordmonkeyman' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 360
+    env:
+      QPN_CUDA_ROOT: ${{ vars.QPN_CUDA_ROOT || '/usr/local/cuda-12.8' }}
+      QPN_GPU: ${{ vars.QPN_GPU || '0' }}
+      QPN_FIXTURE_DIR: ${{ vars.QPN_FIXTURE_DIR || '/srv/strata-qpn/fixtures' }}
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_SWEEP: ${{ inputs.sweep && '1' || '0' }}
+      QPN_SANITIZERS: ${{ github.event_name == 'push' && '1' || inputs.sanitizers && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build, parity, graph replay, timings and sanitizers
+        shell: bash
+        run: bash tools/qpn_v100_ci.sh
+      - name: Upload measurements and build logs (never weights)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-v100-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-results/
+          if-no-files-found: warn
+          retention-days: 14

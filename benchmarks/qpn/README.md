@@ -1,5 +1,8 @@
 # NVFP4 Volta QPN prototype — hardware qualification pending
 
+For automated tests on your server, use the [self-hosted V100 runner setup](self-hosted-runner.md)
+and [workflow YAML](../../.github/workflows/qpn-v100.yml).
+
 This branch contains a **standalone experimental direct-layout candidate**,
 adapted from ninfer's QPN schedule for Strata's canonical NVFP4 expert bytes.
 It does **not** integrate a new engine backend, change expert slots, implement
