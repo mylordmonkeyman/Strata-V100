@@ -56,3 +56,16 @@ full model, or deployment.
 ## Baseline-compatible verifier setting
 
 The pinned successful M0 manifest from [run 40815727472](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/40815727472) used `--spec 2`, not zero, for its native-expert pack. The first two candidate CI control runs (40946109728 and 40947374667) exited with code 2 in ~1.2 seconds, before inference, because the new A/B harness used `--spec 0`. The verifier-window requirement is enforced by the engine's native-pack startup gate. Keep `--spec 2` with `--suffix-draft 0` and no MTP model to match the baseline's non-drafting behavior. Those failed startups are **not performance results**.
+
+## Matched-order MMQ control
+
+Both arms explicitly set `STRATA_QPN_PREFILL_PLAN_CONTROL=1`.
+The MMQ control applies the **same host-only expert permutation** but
+executes *all* groups on original MMQ. The QPN arm applies that partition
+and replaces only pure 17–32-row groups with QPN. With both experimental
+environment variables unset, the default permutation and dispatch are
+unchanged. A `strata qpn-plan: ... execute=0|1` diagnostic reports the
+real matched group plan for each layer; the harness rejects a missing plan,
+a candidate with no actual QPN launches, and any QPN execution in the MMQ
+control. This removes the group-order confound present in the initial smoke
+run; do not attribute a speed difference to QPN without it.

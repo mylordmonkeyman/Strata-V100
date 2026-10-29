@@ -13,7 +13,7 @@ import time
 
 PREFILL = re.compile(r"prefill\s+(\d+)\s+tokens in\s+([\d.]+)\s+ms.*time to first token\s+([\d.]+)\s+ms")
 DECODE = re.compile(r"decode\s+(\d+)\s+tokens in\s+([\d.]+)\s+ms\s+->\s+([\d.]+)\s+tok/s")
-ACTIVE = re.compile(r"strata qpn-experiment: layer\s+(\d+)\s+staged groups=(\d+)\s+experts=(\d+)")
+PLAN = re.compile(r"strata qpn-plan: layer\s+(\d+)\s+staged groups=(\d+)\s+experts=(\d+)\s+execute=(0|1)")
 def sha(path):
     h=hashlib.sha256()
     with open(path,"rb") as f:
@@ -98,14 +98,18 @@ def read_summary(log):
     # Full raw logs, including prompt IDs, stay in private runner-only state.
     text=Path(log).read_text(errors="replace")
     p=PREFILL.findall(text);d=DECODE.findall(text)
-    groups=ACTIVE.findall(text)
+    groups=PLAN.findall(text)
+    execution=[g for g in groups if g[3]=="1"]
     return {'prefill_tokens':int(p[-1][0]) if p else None,
             'prefill_ms':float(p[-1][1]) if p else None,
             'ttft_ms':float(p[-1][2]) if p else None,
             'decode_toks_per_s':float(d[-1][2]) if d else None,
-            'qpn_reported_layers':len(groups),
-            'qpn_groups':sum(int(g[1]) for g in groups),
-            'qpn_experts':sum(int(g[2]) for g in groups),
+            'qpn_plan_layers':len(groups),
+            'qpn_plan_groups':sum(int(g[1]) for g in groups),
+            'qpn_plan_experts':sum(int(g[2]) for g in groups),
+            'qpn_reported_layers':len(execution),
+            'qpn_groups':sum(int(g[1]) for g in execution),
+            'qpn_experts':sum(int(g[2]) for g in execution),
             'error_lines':sum("error" in line.lower() for line in text.splitlines())}
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -122,6 +126,7 @@ def main():
         raise ValueError("the pinned private prepared model / prompt is missing")
     env={k:v for k,v in os.environ.items() if not k.startswith("STRATA_")}
     env.update({"STRATA_PREFILL_NVFP4":"w4a8",
+                "STRATA_QPN_PREFILL_PLAN_CONTROL":"1",  # both arms get identical host expert order
                 "STRATA_PREFILL_CPU_SHARE":"0",
                 "STRATA_MMQ_DIRECT":"0",
                 "STRATA_MMQ_RESIDENT_SORT_NE":"0",
@@ -172,7 +177,8 @@ def main():
         persist()
         print(f"full-model ABBA {idx}: {mode} exit={code} TTFT={row['ttft_ms']} ms QPN groups={row['qpn_groups']}",flush=True)
         if(code!=0 or row['ttft_ms'] is None or row['decode_toks_per_s'] is None or
-           not raw_logits.is_file() or (mode=="qpn" and row['qpn_groups']==0) or
+           not raw_logits.is_file() or row['qpn_plan_groups']==0 or
+           (mode=="qpn" and row['qpn_groups']==0) or
            (mode=="mmq" and row['qpn_groups']!=0)):
             summary['status']='failed_execution_or_unexercised_kernel'
             persist()

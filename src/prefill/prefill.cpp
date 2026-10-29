@@ -4285,7 +4285,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // single-device, pure native NVFP4 W4A8 route is currently eligible.
                         // Stream-all uses a separate ordered asynchronous blob issuer; never
                         // permute its experts without changing that ownership protocol.
-                        if (detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL")) &&
+                        const bool qpn_execute=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL"));
+                        const bool qpn_plan_only=detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_PLAN_CONTROL"));
+                        // Explicit matched-order MMQ control partitions routes but
+                        // never invokes QPN. Both knobs are off by default.
+                        if ((qpn_execute || qpn_plan_only) &&
                             !stream_all && !fused_l && !compact_l && use_mmq &&
                             lay.native && !had_gu && !had_d &&
                             mmq_gt == (int) GGML_TYPE_NVFP4 && mmq_dt == (int) GGML_TYPE_NVFP4 &&
@@ -4293,6 +4297,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             !mmq_plan().direct[(size_t) l] &&
                             !detail::mmq_resident_sort_requested() &&
                             !detail::mmq_group_sort_requested() &&
+                            lay.fmt[(size_t) l].tail_off != 0 &&
                             m.mixed_h && m.grp_tail && m.row_sd && m.cache &&
                             on_peer.empty() && on_cpu.empty() && !m.pp) {
                             int device=0;
@@ -4303,14 +4308,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 err="experimental QPN requires a single sm_70 CUDA device";
                                 return false;
                             }
+                            bool qpn_planned=false;
                             try {
-                                qpn_layer=detail::qpn_partition_rows(
+                                qpn_planned=detail::qpn_partition_rows(
                                     ids_h,(size_t)(T*K),(int32_t)K,m.cnt,m.off,
                                     order,slot_h,src_h,MMQ_GROUP);
                             } catch(const std::exception& ex) {
                                 err=std::string("experimental QPN routing invariant: ")+ex.what();
                                 return false;
                             }
+                            qpn_layer=qpn_planned && qpn_execute;
                             if(qpn_layer && !m.qpn_scratch) {
                                 cudaStreamCaptureStatus capturing=cudaStreamCaptureStatusNone;
                                 if (cudaStreamIsCapturing(m.cs,&capturing)!=cudaSuccess ||
@@ -4325,7 +4332,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 }
                                 m.qpn_scratch=std::move(scratch);
                             }
-                            if(qpn_layer) {
+                            if(qpn_planned) {
                                 int selected_groups=0,selected_experts=0;
                                 for(std::size_t j=0;j<order.size();j+=MMQ_GROUP) {
                                     const std::size_t end=std::min(order.size(),j+(std::size_t)MMQ_GROUP);
@@ -4335,8 +4342,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     }
                                 }
                                 std::fprintf(stderr,
-                                    "strata qpn-experiment: layer %lld staged groups=%d experts=%d route rows=17..32\n",
-                                    (long long)l,selected_groups,selected_experts);
+                                    "strata qpn-plan: layer %lld staged groups=%d experts=%d execute=%d route rows=17..32\n",
+                                    (long long)l,selected_groups,selected_experts,(int)qpn_layer);
                             }
                         }
 #endif
