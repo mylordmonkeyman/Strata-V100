@@ -156,9 +156,14 @@ int main(int argc, char** argv) try {
     Device w(blob.size()), input(x.size()*4), xh(x.size()*2), gh(hr.size()*4), uh(hr.size()*4), hidden(hr.size()*4),
            hh(hr.size()*2), y(reference.size()*4+256), wgh(wg.size()*2), wuh(wu.size()*2), wdh(wd.size()*2),
            mmgu(size_t(tokens)*2*FF*4), mmx(m::q8_bytes(tokens, N)), mmh(m::q8_bytes(tokens, FF)),
-           bounds(8), ids(size_t(tokens)*4), mmwg(2*L.up_off+4096), mmwd(L.up_off+4096);
+           // GGML MMQ may read row indices for inactive lanes in padded tiles.
+           // Allocate and initialize a safe index tail; do not modify the active
+           // 0..T-1 mapping or the comparator's actual output row count.
+           bounds(8), ids(size_t(tokens+256)*4), mmwg(2*L.up_off+4096), mmwd(L.up_off+4096);
     w.put(blob.data(), blob.size()); input.put(x.data(), x.size()*4);
-    const int limits[] = {0, tokens}; bounds.put(limits, 8); m::iota(ids.as<int32_t>(), tokens, s);
+    const int limits[] = {0, tokens}; bounds.put(limits, 8);
+    ck(cudaMemsetAsync(ids.p, 0, size_t(tokens+256)*sizeof(int32_t), s));
+    m::iota(ids.as<int32_t>(), tokens, s);
     const auto* scales = reinterpret_cast<const float*>(w.as<uint8_t>()+L.tail_off);
     auto dequant = [&] {
         k::iq_dequant_f16(40, w.p, wg.size(), wgh.as<uint16_t>(), s);
