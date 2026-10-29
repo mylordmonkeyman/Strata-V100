@@ -19,7 +19,9 @@ def captured_token_buckets(rows):
     """Use actual routed rows, never pad, duplicate or exceed the capture."""
     if not isinstance(rows, int) or rows < 1 or rows > 32:
         raise ValueError("expected 1..32 real routed activation rows")
-    return sorted({t for t in (1, 2, 4, 8, 16, 32, rows) if t <= rows})
+    # Exercise both CTA boundaries and a partial final tile, using only
+    # genuine captured prefix rows (never duplicate or pad activations).
+    return sorted({t for t in (1, 2, 4, 8, 16, 17, 24, 31, 32, rows) if t <= rows})
 
 
 def tile_variants(tokens, choices):
