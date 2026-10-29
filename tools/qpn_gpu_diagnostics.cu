@@ -78,11 +78,13 @@ int main() try {
                 attrs.numRegs,size_t(attrs.sharedSizeBytes),max_blocks,
                 noop.gpu_us,noop.host_enqueue_us);
     bool first_case=true;
-    for (int t : {17,24,32}) for (int token_tile : {8,16}) {
+    for (int t : {17,24,32}) for (int token_tile : {8,16,32}) {
         const q::Schedule sched{4,1,1,token_tile};
         Kernel case_kernel = token_tile==8
             ? &d::nvfp4_volta_qpn_gemm_kernel<1,4,1,true,false>
-            : &d::nvfp4_volta_qpn_gemm_kernel<2,4,1,true,false>;
+            : token_tile==16
+            ? &d::nvfp4_volta_qpn_gemm_kernel<2,4,1,true,false>
+            : &d::nvfp4_volta_qpn_gemm_kernel<4,4,1,true,false>;
         cudaFuncAttributes case_attrs{};
         ck(cudaFuncGetAttributes(&case_attrs,case_kernel));
         int case_max_blocks=0;
