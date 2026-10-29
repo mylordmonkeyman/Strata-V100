@@ -27,7 +27,9 @@ class CapturedActivationTest(unittest.TestCase):
         self.assertEqual(captured_token_buckets(1), [1])
         self.assertEqual(captured_token_buckets(3), [1, 2, 3])
         self.assertEqual(captured_token_buckets(9), [1, 2, 4, 8, 9])
-        self.assertEqual(captured_token_buckets(32), [1, 2, 4, 8, 16, 32])
+        self.assertEqual(captured_token_buckets(29), [1, 2, 4, 8, 16, 17, 24, 29])
+        self.assertEqual(captured_token_buckets(31), [1, 2, 4, 8, 16, 17, 24, 31])
+        self.assertEqual(captured_token_buckets(32), [1, 2, 4, 8, 16, 17, 24, 31, 32])
 
     def test_rejects_invalid_counts(self):
         for rows in (0, -1, 33, 1.5, None):
