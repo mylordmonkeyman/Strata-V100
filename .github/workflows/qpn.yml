@@ -32,19 +32,34 @@ jobs:
             exit 1
           fi
   cuda-compile:
-    runs-on: ubuntu-24.04
-    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    # GitHub-hosted Ubuntu VMs are disposable; their job containers always
+    # cause 'docker pull' and reinstall dependencies. Use the already-built,
+    # persistent CUDA 12.8 QPN runner instead. Compile-only: no GPU tests.
+    # Never execute untrusted fork PR code on the private self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    env:
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      QPN_CI_BUILD_ROOT: /srv/strata-qpn/builds/qpn-ci-compile
     steps:
-      - run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build git g++
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify pinned, preinstalled CUDA build tools (no Docker or apt)
+        run: |
+          test -x "$QPN_CUDA_ROOT/bin/nvcc"
+          "$QPN_CUDA_ROOT/bin/nvcc" --version
+          cmake --version
+          ninja --version
+          mkdir -p "$QPN_CI_BUILD_ROOT"
       - name: Configure isolated sm_70 candidate
-        run: cmake -S . -B build-qpn-cuda -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON
-      - run: cmake --build build-qpn-cuda --target strata_volta_qpn -j2
+        run: cmake -S . -B "$QPN_CI_BUILD_ROOT/sm70" -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON
+      - run: cmake --build "$QPN_CI_BUILD_ROOT/sm70" --target strata_volta_qpn -j2
       - name: Configure non-Volta control without QPN
-        run: cmake -S . -B build-qpn-sm80 -G Ninja -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=OFF
+        run: cmake -S . -B "$QPN_CI_BUILD_ROOT/sm80" -G Ninja -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=OFF
       - name: Reject feature on a non-Volta target
         run: |
-          if cmake -S . -B build-qpn-sm80 -DSTRATA_ENABLE_VOLTA_QPN=ON; then
+          if cmake -S . -B "$QPN_CI_BUILD_ROOT/sm80" -DSTRATA_ENABLE_VOLTA_QPN=ON; then
             exit 1
           fi
 # No GPU runner is assumed here. Runtime/sanitizer/model tests must be run on
