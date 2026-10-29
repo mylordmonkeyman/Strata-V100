@@ -99,12 +99,24 @@ diverge numerically.
    MMQ uses Q8_1 activation quantization and Q8_1 hidden quantization.
    These are concrete potential sources of different rounding, but
    their fraction of the model-level discrepancy is **unmeasured**.
-   Before trying to reuse existing quantized `Xq/Hq` buffers with
-   `qpn::stage_q8_1`, independently verify `block_q8_1_mmq`'s
-   four-block interleaved memory layout; the standalone helper assumes
-   linear 36-byte blocks and must **not** be fed mismatched MMQ storage.
-   Add a verified conversion, or a layout-aware staging kernel, with
-   independent parity tests, then repeat matched model quality.
+   The pinned llama.cpp source at commit
+   `3cf03257f219afbe7334045ff7c6a06ac68c627d` confirms
+   `block_q8_1_mmq` has **144 bytes**: `float d4[4]` (four
+   FP32 scales for 32 values each) followed by `int8_t qs[128]`.
+   `GGML_TYPE_NVFP4` selects `MMQ_Q8_1_DS_LAYOUT_D4`. Its quantizer
+   stores a row's 128-value block at index
+   `(column / 128) * total_rows + row`, not at contiguous 36-byte
+   GGML `block_q8_1` offsets.
+   Thus `qpn::stage_q8_1` **cannot** safely consume `Xq/Hq`: it
+   assumes a linear sequence of 36-byte blocks with FP16 block scales.
+   Implement a separately named **D4 layout-aware device staging
+   kernel** with `float d4[(column % 128)/32] *
+   qs[column % 128]` and FP16 output. Prove per-row byte/scale
+   parity using both synthetic D4 buffers and actual
+   `mmq::quantize_scatter`/group `mmq::quantize` output,
+   including guards and memcheck, before enabling a Q8-aligned
+   matched full-model A/B. No such Q8-alignment integration was
+   enabled in the reported runs.
 2. **Launch and memory overhead.** Current integration issues serial
    QPN gate/up/down projections and per-expert activation staging
    inside 16-expert groups. Test grouped/ragged launches with exact
@@ -122,3 +134,15 @@ diverge numerically.
 **Disposition:** experimental compiler flag and runtime switch remain
 off by default; no production enablement, no main-branch changes,
 no model-pack changes, no cache slot/runner/service changes.
+
+## Pinned upstream layout evidence
+
+Reviewed `ggml/src/ggml-cuda/mmq.cuh` (lines 18–77) and
+`ggml/src/ggml-cuda/quantize.cu` (lines 456–552) at
+[upstream commit `3cf03257`](https://github.com/ggml-org/llama.cpp/tree/3cf03257f219afbe7334045ff7c6a06ac68c627d).
+For each `i0`, the source uses `k_block=i0/128`, `iqs=i0%128`,
+`ib=k_block*ne1+i`, writes `y[ib].qs[iqs]` and the FP32 scale
+`y[ib].d4[iqs/32]`. Any QPN conversion must preserve this indexing
+and the caller's actual `ne1` (all routed rows for scattered X,
+only group-relative rows for quantized H). These are verified source
+facts, **not** yet measured numerical or performance improvements.
