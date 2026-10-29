@@ -137,7 +137,7 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1;bool check_graph=false;
+    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
@@ -149,24 +149,35 @@ int main(int argc,char** argv)try{
         else if(flag=="--iterations")iterations=std::stoi(val);
         else if(flag=="--rounds")rounds=std::stoi(val);
         else if(flag=="--qpn-min")qpn_min=std::stoi(val);
+        else if(flag=="--qpn-max")qpn_max=std::stoi(val);
         else throw std::invalid_argument("unknown argument");
     }
     if(wp.empty()||xp.empty()||cp.empty()||iterations<1||iterations>1000||rounds<1||rounds>50||
-       (qpn_min!=1&&qpn_min!=17&&qpn_min!=33))
+       (qpn_min!=1&&qpn_min!=17&&qpn_min!=33&&qpn_min!=129) ||
+       (qpn_max!=128&&qpn_max!=512) ||
+       (qpn_min==129&&qpn_max!=512) ||
+       ((qpn_min==1||qpn_min==17)&&qpn_max!=128))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
     auto host_w=read_file(wp,E*STRIDE);
     auto host_x=read_file(xp,size_t(rows)*N*4);
-    // Reorder the SAME real groups and their exact routed rows for BOTH arms:
-    // MMQ prefix (>32 and <=16) followed by the four 17..32 QPN candidates.
-    // This is an offline layout of a verified private capture, not invented data.
-    if(qpn_min==17 || qpn_min==33){
-        // A separately qualified experimental large-row policy. Never
-        // accept the >128 experts: keep those and all <=32 in MMQ.
-        const auto candidate=[&](int n) {
-            return qpn_min==17 ? n>=17&&n<=32 : n>=33&&n<=128;
-        };
+    // Offline partition of the SAME private real expert rows and weights
+    // for both arms: MMQ fallback prefix then selected QPN candidates.
+    // This is NOT the full-model production dispatcher.
+    const auto candidate=[&](int n) {
+        if(qpn_min==17)return n>=17&&n<=32;
+        if(qpn_min==33)return n>=33&&n<=qpn_max;
+        if(qpn_min==129)return n>=129&&n<=qpn_max;
+        return n<=32;
+    };
+    const int candidates=(qpn_min==1)?10:
+        int(std::count_if(counts.begin(),counts.end(),candidate));
+    if(qpn_min==129 && candidates!=2)
+        throw std::runtime_error("expected exactly 187 and 508 real routed rows");
+    if(qpn_min==33 && qpn_max==512 && candidates!=6)
+        throw std::runtime_error("expected exactly six real T33..512 experts");
+    if(qpn_min==17 || qpn_min==33 || qpn_min==129){
         std::vector<int> order;
         for(int i=0;i<E;i++)if(!candidate(counts[i]))order.push_back(i);
         for(int i=0;i<E;i++)if(candidate(counts[i]))order.push_back(i);
@@ -187,18 +198,14 @@ int main(int argc,char** argv)try{
         if(next_row!=size_t(rows))throw std::runtime_error("reorder lost or duplicated rows");
         host_w.swap(new_w);host_x.swap(new_x);counts.swap(reordered);
     }
-    const int fallback_groups=(qpn_min==17||qpn_min==33)?12:6;
+    const int fallback_groups=E-candidates;
     std::array<int,E+1> bounds{};
     for(int i=0;i<E;i++)bounds[i+1]=bounds[i]+counts[i];
     const int fallback_rows=bounds[fallback_groups],small=rows-fallback_rows;
-    if(qpn_min==17 &&
-       (std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=17&&n<=32;}) ||
-        std::any_of(counts.begin()+12,counts.end(),[](int n){return n<17||n>32;})))
-        throw std::runtime_error("17..32 mixed partition broken");
-    if(qpn_min==33 &&
-       (std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=33&&n<=128;}) ||
-        std::any_of(counts.begin()+12,counts.end(),[](int n){return n<33||n>128;})))
-        throw std::runtime_error("33..128 mixed partition broken");
+    if(qpn_min!=1 &&
+       (std::any_of(counts.begin(),counts.begin()+fallback_groups,candidate) ||
+        !std::all_of(counts.begin()+fallback_groups,counts.end(),candidate)))
+        throw std::runtime_error("selected large-row mixed partition broken");
     std::vector<float> x(size_t(rows)*N);
     std::memcpy(x.data(),host_x.data(),host_x.size());
     for(float v:x)if(!std::isfinite(v)||std::abs(v)>65504.f)
@@ -366,8 +373,8 @@ int main(int argc,char** argv)try{
         check_canary();
     }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"routed_rows\":%d,",
-                fallback_groups,E-fallback_groups,qpn_min,rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,qpn_max,rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
     std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
