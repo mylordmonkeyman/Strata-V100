@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          github-token: ${ github.token }}
+          github-token: ${{ github.token }}
           run-id: 40908922475
           name: qpn-mixed-fixture-40908922475-1
           path: pinned-mixed-summary
@@ -41,7 +41,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qpn-mixed-gpu-${ github.run_id }}-${ github.run_attempt }}
+          name: qpn-mixed-gpu-${{ github.run_id }}-${{ github.run_attempt }}
           path: qpn-mixed-gpu-results/
           if-no-files-found: warn
           retention-days: 14
