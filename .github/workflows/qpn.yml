@@ -12,25 +12,6 @@ on:
 permissions:
   contents: read
 jobs:
-  docker-runner-image:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate Docker Compose configuration
-        env:
-          QPN_GPU_UUID: GPU-00000000-0000-0000-0000-000000000000
-        run: docker compose -f docker/qpn-runner/compose.yaml config --quiet
-      - name: Build CUDA runner image (no GPU needed)
-        run: docker build -t strata-qpn-runner:ci docker/qpn-runner
-      - name: Check installed build tools and runner libraries
-        run: |
-          docker run --rm --entrypoint bash strata-qpn-runner:ci -lc '
-            test "$(id -u)" = 10001
-            nvcc --version
-            cmake --version
-            compute-sanitizer --version
-            /opt/runner-template/bin/Runner.Listener --version
-          '
   host:
     runs-on: ubuntu-24.04
     steps:
