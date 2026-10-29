@@ -1,5 +1,5 @@
 import unittest
-from qpn_prefill_run import crossover
+from qpn_prefill_run import crossover, captured_token_buckets
 
 
 def arm(name, available=True, valid=True, times=None):
@@ -20,6 +20,19 @@ class CrossoverTest(unittest.TestCase):
     def test_uses_median(self):
         self.assertEqual(crossover({"arms":[arm("qpn_direct",times=[9,9,9,9,9,1000]),
                                             arm("dequant_fp16_cublas",times=[10]*6)]}),"qpn_direct")
+
+
+class CapturedActivationTest(unittest.TestCase):
+    def test_buckets_use_only_actual_rows(self):
+        self.assertEqual(captured_token_buckets(1), [1])
+        self.assertEqual(captured_token_buckets(3), [1, 2, 3])
+        self.assertEqual(captured_token_buckets(9), [1, 2, 4, 8, 9])
+        self.assertEqual(captured_token_buckets(32), [1, 2, 4, 8, 16, 32])
+
+    def test_rejects_invalid_counts(self):
+        for rows in (0, -1, 33, 1.5, None):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                captured_token_buckets(rows)
 
 
 if __name__=="__main__": unittest.main()

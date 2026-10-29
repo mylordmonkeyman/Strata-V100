@@ -1,0 +1,42 @@
+name: QPN real-activation prefill crossover
+on:
+  push:
+    branches: ['qpn/prefill-real']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  prefill-real:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 180
+    env:
+      QPN_CUDA_ROOT: ${{ vars.QPN_CUDA_ROOT || '/usr/local/cuda-12.8' }}
+      QPN_GPU: ${{ vars.QPN_GPU || '0' }}
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_BASELINE_MANIFEST: qpn-baseline-metadata/manifest.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40815727472
+          pattern: qpn-m0-*
+          merge-multiple: true
+          path: qpn-baseline-metadata
+      - name: Compare actual NVFP4 prefill backends on routed activations
+        shell: bash
+        run: bash tools/qpn_prefill_real_ci.sh
+      - name: Upload timing/quality metadata (never weight/activation bytes)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-prefill-real-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-prefill-real-results/
+          if-no-files-found: warn
+          retention-days: 14

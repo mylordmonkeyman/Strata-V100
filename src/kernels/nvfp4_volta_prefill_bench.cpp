@@ -77,11 +77,12 @@ int positive_integer(const char* value) {
 }
 } // namespace
 int main(int argc, char** argv) try {
-    std::string path; int tokens = 8, iterations = 100;
+    std::string path, activation_path; int tokens = 8, iterations = 100;
     for (int i = 1; i < argc; ++i) {
         if (i+1 == argc) throw std::invalid_argument("option needs a value");
         const std::string a(argv[i]); const char* v = argv[++i];
         if (a == "--blob") path = v;
+        else if (a == "--activations") activation_path = v;
         else if (a == "--tokens") tokens = positive_integer(v);
         else if (a == "--iterations") iterations = positive_integer(v);
         else throw std::invalid_argument("unknown option: " + a);
@@ -113,7 +114,22 @@ int main(int argc, char** argv) try {
     type->to_float(blob.data(), wg.data(), wg.size()); type->to_float(blob.data()+L.up_off, wu.data(), wu.size());
     type->to_float(blob.data()+L.down_off, wd.data(), wd.size());
     std::vector<float> x(size_t(tokens)*N); std::normal_distribution<float> nd;
-    for (auto& v : x) v = nd(rng);
+    if (activation_path.empty()) {
+        for (auto& v : x) v = nd(rng);
+    } else {
+        // This is a prefix of actual routed rows, exported by the pinned M0
+        // capture tool. Never repeat or pad a short capture with Gaussian data.
+        std::ifstream f(activation_path, std::ios::binary | std::ios::ate);
+        if (!f || f.tellg() < std::streamoff(x.size()*sizeof(float)) ||
+            f.tellg() % std::streamoff(N*sizeof(float)) != 0)
+            throw std::runtime_error("activation file needs complete FP32 rows for requested tokens");
+        f.seekg(0);
+        if (!f.read(reinterpret_cast<char*>(x.data()), x.size()*sizeof(float)))
+            throw std::runtime_error("activation file read failed");
+    }
+    for (float v : x)
+        if (!std::isfinite(v) || std::abs(v) > 65504.0f)
+            throw std::runtime_error("nonfinite or FP16-unrepresentable activation");
     const std::vector<double> xr(x.begin(), x.end());
     auto gr = project_ref(wg, xr, FF, N, tokens), ur = project_ref(wu, xr, FF, N, tokens);
     std::vector<double> hr(size_t(tokens)*FF);
@@ -188,7 +204,7 @@ int main(int argc, char** argv) try {
         }
     cudaEventDestroy(a); cudaEventDestroy(b);
     bool pass=true;
-    std::printf("{\"tokens\":%d,\"fixture\":\"%s\",\"mmq_eligible\":%s,\"fp16_weight_bytes\":%zu,\"arms\":[",tokens,path.empty()?"synthetic":"real",mmq_ok?"true":"false",(wg.size()+wu.size()+wd.size())*2);
+    std::printf("{\"tokens\":%d,\"fixture\":\"%s\",\"activation_source\":\"%s\",\"mmq_eligible\":%s,\"fp16_weight_bytes\":%zu,\"arms\":[",tokens,path.empty()?"synthetic":"real",activation_path.empty()?"gaussian":"captured",mmq_ok?"true":"false",(wg.size()+wu.size()+wd.size())*2);
     for (size_t i=0;i<arms.size();++i) {
         const auto& arm=arms[i]; if (arm.available && arm.error>.03) pass=false;
         std::printf("%s{\"backend\":\"%s\",\"available\":%s,\"expert_l2\":",i?",":"",arm.name,arm.available?"true":"false");
