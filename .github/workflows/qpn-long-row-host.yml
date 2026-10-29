@@ -1,0 +1,23 @@
+name: QPN long-row host eligibility
+on:
+  push:
+    branches: ['qpn/large-route-probe']
+    paths:
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
+      - 'tests/nvfp4_qpn_host_test.cpp'
+      - '.github/workflows/qpn-long-row-host.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test host-only long-row schedule eligibility
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Iinclude tests/nvfp4_qpn_host_test.cpp -o /tmp/qpn_long_rows_host
+          /tmp/qpn_long_rows_host

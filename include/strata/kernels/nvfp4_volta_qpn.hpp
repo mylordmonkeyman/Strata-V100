@@ -8,7 +8,9 @@
 namespace strata::kernels::qpn {
 constexpr int block_values = 64;
 constexpr int block_bytes = 36;
-constexpr int max_tokens = 32;
+// Standalone T>32 qualification only: the full-model experimental routing
+// policy still selects 17..32 experts. The Volta grid.z handles row tiles.
+constexpr int max_tokens = 128;
 
 // Canonical GGUF NVFP4: [4 scale bytes | 4 * 8 split-half code bytes].
 // UE4M3 matches Strata/ggml, including 0x7f -> zero and ignored sign bit.
