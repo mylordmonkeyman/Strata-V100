@@ -1,0 +1,96 @@
+name: QPN long-row T33-128 V100 qualification
+on:
+  push:
+    branches: ['qpn/large-route-probe']
+    paths:
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
+      - 'tools/qpn_long_row_probe.cu'
+      - '.github/workflows/qpn-long-row-v100.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  synthetic-gpu:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 50
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build with persistent V100 cache and verify full vs 32-row segmented
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64"
+          mkdir -p qpn-long-row-results
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader > qpn-long-row-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-long-row-results/processes-before.txt; then
+            echo 'GPU in use; refuse competing run' >&2
+            exit 2
+          fi
+          build="$QPN_STATE_DIR/builds/qpn-gpu-probe"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=OFF
+          cmake --build "$build" --target strata_volta_qpn --parallel 16
+          "$QPN_CUDA_ROOT/bin/nvcc" -O3 -std=c++17 -arch=sm_70 \
+            -Iinclude -Isrc/kernels/cuda tools/qpn_long_row_probe.cu \
+            "$build/libstrata_volta_qpn.a" -lcudart -o "$build/qpn_long_row_probe"
+          "$build/qpn_long_row_probe" > qpn-long-row-results/summary.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          p=pathlib.Path('qpn-long-row-results/summary.json')
+          d=json.loads(p.read_text())
+          assert [r['tokens'] for r in d['results']]==[33,40,48,64,96,97,128]
+          assert all(r['bitwise'] and r['changed_input_graph'] and r['guards'] for r in d['results'])
+          d['source_commit']=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          d['source_sha256']=hashlib.sha256(pathlib.Path('tools/qpn_long_row_probe.cu').read_bytes()).hexdigest()
+          d['binary_sha256']=hashlib.sha256(pathlib.Path('/srv/strata-qpn/builds/qpn-gpu-probe/qpn_long_row_probe').read_bytes()).hexdigest()
+          p.write_text(json.dumps(d,sort_keys=True,indent=2)+'\n')
+          PY
+      - name: Sampled Compute Sanitizer memcheck and racecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          command -v compute-sanitizer
+          binary="$QPN_STATE_DIR/builds/qpn-gpu-probe/qpn_long_row_probe"
+          compute-sanitizer --tool memcheck --error-exitcode 98 --leak-check no \
+            --log-file qpn-long-row-results/memcheck.log "$binary" --sanitizer \
+            > qpn-long-row-results/memcheck-summary.json
+          grep -Eq 'ERROR SUMMARY: 0 errors' qpn-long-row-results/memcheck.log
+          compute-sanitizer --tool racecheck --error-exitcode 98 \
+            --log-file qpn-long-row-results/racecheck.log "$binary" --sanitizer \
+            > qpn-long-row-results/racecheck-summary.json
+          grep -Eq 'ERROR SUMMARY: 0 errors|RACECHECK SUMMARY: 0 hazards displayed' \
+            qpn-long-row-results/racecheck.log
+          python3 -m json.tool qpn-long-row-results/memcheck-summary.json >/dev/null
+          python3 -m json.tool qpn-long-row-results/racecheck-summary.json >/dev/null
+      - name: Upload synthetic aggregates only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-long-rows
+          path: |
+            qpn-long-row-results/summary.json
+            qpn-long-row-results/memcheck-summary.json
+            qpn-long-row-results/racecheck-summary.json
+            qpn-long-row-results/memcheck.log
+            qpn-long-row-results/racecheck.log
+          if-no-files-found: warn
+          retention-days: 14
