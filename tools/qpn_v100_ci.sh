@@ -121,6 +121,9 @@ if (( ${#fixtures[@]} > 0 )); then
   run_checked outliers "${binding[@]}" python3 tools/qpn_run.py "$bench" \
     --blob "${fixtures[0]}" --decoders 0 1 --pattern outliers \
     --out "$report_dir/outliers" --iterations 50 --tokens 1 2 3 4 8 16 32
+  run_checked schedule-sweep "${binding[@]}" python3 tools/qpn_run.py "$bench" \
+    --blob "${fixtures[0]}" --decoders 1 --groups 1 8 --sweep --fp32-only \
+    --out "$report_dir/schedule-sweep" --iterations 50 --tokens 2 4 8 16 32
   # Optional model-captured FP32 rows. No file contents are uploaded.
   if [[ -r "$QPN_FIXTURE_DIR/activations.f32" ]]; then
     run_checked real-activations "${binding[@]}" python3 tools/qpn_run.py "$bench" "${real_args[@]}" \

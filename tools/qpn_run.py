@@ -50,6 +50,7 @@ def main():
     p.add_argument("--decoders", type=int, nargs="+", choices=[0, 1], default=[0, 1])
     p.add_argument("--groups", type=int, nargs="+", default=[1])
     p.add_argument("--pattern", choices=["gaussian", "outliers"], default="gaussian")
+    p.add_argument("--fp32-only", action="store_true", help="schedule sweep without extra staging combinations")
     args = p.parse_args()
     if args.iterations < 1 or any(t < 1 or t > 32 for t in args.tokens) or any(g < 1 or g > 32 for g in args.groups):
         p.error("iterations > 0, tokens 1..32 required")
@@ -73,6 +74,8 @@ def main():
         schedules = itertools.product([4, 8, 16], [4, 8], [1, 2], [False, True], [False, True]) if args.sweep else [
             (4, 4, 1, False, False), (4, 4, 1, True, True)]
         for gu, down, acc, input_q8, hidden_q8 in schedules:
+            if args.fp32_only and (input_q8 or hidden_q8):
+                continue
             if t > 16 and gu == 16:
                 continue  # exceeds 48 KiB static shared memory
             argv = [str(binary), "--tokens", str(t), "--iterations", str(args.iterations),

@@ -80,8 +80,12 @@ __global__ __launch_bounds__(
 
     const int scale_tiles = k / S::kChunkK;
     const int stq          = scale_tiles / SPLITK;
-    const int st0           = warp * stq;
-    const int stend         = (warp == SPLITK - 1) ? scale_tiles : st0 + stq;
+    // For K=2560 / 64=40, split16 must not put the ten remainder chunks
+    // in the last warp (the previous schedule's longest path stayed at ten).
+    // Balanced ranges cover each chunk once and differ by at most one chunk.
+    // Retain the old partition in the scalar control.
+    const int st0 = Fast ? scale_tiles * warp / SPLITK : warp * stq;
+    const int stend = Fast ? scale_tiles * (warp+1) / SPLITK : (warp == SPLITK-1 ? scale_tiles : st0+stq);
 
     // GGUF row pitch is K/64 * 36, NOT a separate code plane.
     const std::uint8_t* wrow = weights + static_cast<std::int64_t>(use_col) * (k / 64) * 36;

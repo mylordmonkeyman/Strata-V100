@@ -25,6 +25,10 @@ multi-expert grids and distinct-address streaming working sets. This is a
 standalone experiment, not the engine's device-count grouped dispatch.
 `--pattern outliers` adds seeded activation outliers; all decode allocations
 have write guards, and graph replay also checks a changed input image.
+The [first prefill crossover](results/prefill-first/README.md) confirms NVFP4
+W4A8 MMQ is executable on this V100 build. Initial QPN only narrowly wins at
+T=16; other sizes favor MMQ. The next schedule sweep balances K chunks across
+warps (especially GU split16 and down split8) and tests actual streaming sets.
 
 ## What is implemented
 

@@ -1,0 +1,172 @@
+{
+  "cases": 33,
+  "failed": 0,
+  "prefill_gate": "pending end-to-end TTFT",
+  "crossover": [
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 1,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 2,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 4,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 8,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 16,
+      "backend": "qpn_direct"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 32,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 33,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 64,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 128,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 256,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l0-e7.bin",
+      "tokens": 512,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 1,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 2,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 4,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 8,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 16,
+      "backend": "qpn_direct"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 32,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 33,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 64,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 128,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 256,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l24-e300.bin",
+      "tokens": 512,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 1,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 2,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 4,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 8,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 16,
+      "backend": "qpn_direct"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 32,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 33,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 64,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 128,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 256,
+      "backend": "nvfp4_w4a8_mmq"
+    },
+    {
+      "blob": "/srv/strata-qpn/fixtures/l47-e511.bin",
+      "tokens": 512,
+      "backend": "nvfp4_w4a8_mmq"
+    }
+  ]
+}
