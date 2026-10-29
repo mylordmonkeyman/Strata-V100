@@ -3,6 +3,8 @@ on:
   push:
     branches: ['qpn/large-route-probe']
     paths:
+      - 'src/kernels/nvfp4_volta_mixed_bench.cpp'
+      - 'include/strata/kernels/nvfp4_volta_qpn.hpp'
       - 'tools/qpn_huge_mixed_gpu_ci.sh'
       - '.github/workflows/qpn-huge-mixed-real.yml'
   workflow_dispatch:
