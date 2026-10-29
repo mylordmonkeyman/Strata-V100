@@ -201,7 +201,7 @@ void swiglu(const float* g, const float* u, const float* tail, float* h, std::si
 }
 void swiglu_stage_half(const float* gu, const float* tail, std::uint16_t* hidden_half,
                        int rows, int ff, void* stream) {
-    if (!gu || !tail || !hidden_half || rows<1 || rows>32 || ff!=640)
+    if (!gu || !tail || !hidden_half || rows<1 || rows>max_tokens || ff!=640)
         throw std::invalid_argument("invalid QPN widened GU stage");
     const std::size_t count=std::size_t(rows)*std::size_t(ff);
     swiglu_stage_half_kernel<<<grid(count),threads,0,static_cast<cudaStream_t>(stream)>>>(

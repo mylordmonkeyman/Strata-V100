@@ -137,10 +137,11 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false;
+    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
+        if(flag=="--qpn-fused-gu"){fused_gu=true;continue;}
         if(++i>=argc)throw std::invalid_argument("missing value");
         const std::string val=argv[i];
         if(flag=="--weights")wp=val;
@@ -156,7 +157,8 @@ int main(int argc,char** argv)try{
        (qpn_min!=1&&qpn_min!=17&&qpn_min!=33&&qpn_min!=129) ||
        (qpn_max!=128&&qpn_max!=512) ||
        (qpn_min==129&&qpn_max!=512) ||
-       ((qpn_min==1||qpn_min==17)&&qpn_max!=128))
+       ((qpn_min==1||qpn_min==17)&&qpn_max!=128) ||
+       (fused_gu && (qpn_min!=129 || qpn_max!=512)))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
@@ -281,10 +283,20 @@ int main(int argc,char** argv)try{
             auto* hhalf=hh.as<uint16_t>()+size_t(offset)*F;
             auto* out=y.as<float>()+size_t(offset)*N;
             auto* sc=tail.as<float>()+i*4;
-            q::projection(src,xv,gv,F,N,n,schedule,s);
-            q::projection(src+MAT,xv,uv,F,N,n,schedule,s);
-            q::swiglu(gv,uv,sc,hv,size_t(n)*F,s);
-            q::stage_f32(hv,hhalf,size_t(n)*F,s);
+            if (fused_gu) {
+                // Same canonical contiguous GGUF gate+up expert weights,
+                // in one 1280-wide projection. Fused SwiGLU stages FP16,
+                // avoiding two launches per large selected expert.
+                q::projection(src,xv,gu.as<float>()+size_t(offset)*GU,
+                              GU,N,n,schedule,s);
+                q::swiglu_stage_half(gu.as<float>()+size_t(offset)*GU,
+                                     sc,hhalf,n,F,s);
+            } else {
+                q::projection(src,xv,gv,F,N,n,schedule,s);
+                q::projection(src+MAT,xv,uv,F,N,n,schedule,s);
+                q::swiglu(gv,uv,sc,hv,size_t(n)*F,s);
+                q::stage_f32(hv,hhalf,size_t(n)*F,s);
+            }
             q::projection(src+2*MAT,hhalf,out,N,F,n,schedule,s);
             q::scale_down(out,sc,size_t(n)*N,s);
         }
@@ -373,8 +385,8 @@ int main(int argc,char** argv)try{
         check_canary();
     }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"routed_rows\":%d,",
-                fallback_groups,E-fallback_groups,qpn_min,qpn_max,rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
     std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
