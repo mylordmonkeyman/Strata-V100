@@ -72,6 +72,9 @@ void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, voi
 // Global scales stay FP32, applied before FP32 SiLU and on the down output.
 void swiglu(const float* gate, const float* up, const float* tail,
             float* hidden, std::size_t count, void* stream);
+ // Opt-in widened [rows, 2*ff] FP32 GU -> FP16 [rows,ff] hidden.
+void swiglu_stage_half(const float* gu, const float* tail, std::uint16_t* hidden_half,
+                       int rows, int ff, void* stream);
 void scale_down(float* output, const float* tail, std::size_t count, void* stream);
 // Standalone qualification probe: output[scale*16+code], 128 canonical scales.
 void decoder_probe(float* output, void* stream);

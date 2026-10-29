@@ -40,6 +40,17 @@ __global__ void swiglu_kernel(const float* gate, const float* up, const float* t
     const float sigmoid = g >= 0 ? 1.0f / (1.0f + e) : e / (1.0f + e);
     hidden[i] = (g * sigmoid) * u;
 }
+__global__ void swiglu_stage_half_kernel(const float* gu, const float* tail,
+                                       half* hidden, std::size_t count, int ff) {
+    const std::size_t i=std::size_t(blockIdx.x)*blockDim.x + threadIdx.x;
+    if (i>=count) return;
+    const std::size_t row=i/std::size_t(ff), col=i%std::size_t(ff);
+    const float* r=gu+row*std::size_t(ff*2);
+    const float g=r[col]*tail[0], u=r[std::size_t(ff)+col]*tail[1];
+    const float e=expf(-fabsf(g));
+    const float sigmoid=g>=0 ? 1.0f/(1.0f+e) : e/(1.0f+e);
+    hidden[i]=__float2half_rn((g*sigmoid)*u);
+}
 __global__ void down_kernel(float* output, const float* tail, std::size_t count) {
     const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count) output[i] *= tail[2];
@@ -142,6 +153,15 @@ void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, voi
 }
 void swiglu(const float* g, const float* u, const float* tail, float* h, std::size_t count, void* stream) {
     swiglu_kernel<<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(g, u, tail, h, count); check();
+}
+void swiglu_stage_half(const float* gu, const float* tail, std::uint16_t* hidden_half,
+                       int rows, int ff, void* stream) {
+    if (!gu || !tail || !hidden_half || rows<1 || rows>32 || ff!=640)
+        throw std::invalid_argument("invalid QPN widened GU stage");
+    const std::size_t count=std::size_t(rows)*std::size_t(ff);
+    swiglu_stage_half_kernel<<<grid(count),threads,0,static_cast<cudaStream_t>(stream)>>>(
+        gu,tail,reinterpret_cast<half*>(hidden_half),count,ff);
+    check();
 }
 void scale_down(float* output, const float* tail, std::size_t count, void* stream) {
     down_kernel<<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(output, tail, count); check();
