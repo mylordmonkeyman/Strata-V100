@@ -1,0 +1,14 @@
+synthetic	0
+real	0
+streaming	0
+outliers	0
+schedule-sweep	0
+memcheck-t3	0
+memcheck-t8	0
+memcheck-t17	0
+racecheck-t3	0
+racecheck-t8	0
+racecheck-t17	0
+initcheck-t3	0
+initcheck-t8	0
+initcheck-t17	0

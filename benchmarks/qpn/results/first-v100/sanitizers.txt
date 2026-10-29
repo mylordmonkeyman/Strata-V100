@@ -1,0 +1,26 @@
+initcheck-t17.log
+========= ERROR SUMMARY: 0 errors
+
+initcheck-t3.log
+========= ERROR SUMMARY: 0 errors
+
+initcheck-t8.log
+========= ERROR SUMMARY: 0 errors
+
+memcheck-t17.log
+========= ERROR SUMMARY: 0 errors
+
+memcheck-t3.log
+========= ERROR SUMMARY: 0 errors
+
+memcheck-t8.log
+========= ERROR SUMMARY: 0 errors
+
+racecheck-t17.log
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+racecheck-t3.log
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+
+racecheck-t8.log
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

@@ -1,0 +1,24 @@
+The experimental src/kernels/cuda/nvfp4_volta_qpn_core.cuh adapts the QPN
+schedule, MMA instruction wrapper, and fragment map from geoffwatts/ninfer-v100
+commit b37d0dd3e1163b9d802d8bccfa89918bf68d793e (Apache License 2.0).
+https://github.com/geoffwatts/ninfer-v100
+License: LICENSES/Apache-2.0.txt.
+
+Modifications, October 28, 2026: canonical GGUF 36-byte block decoder and
+split-half nibble order, FP16-only activation input, FP32 output, standalone
+Strata interface, no prepacked cache representation or ninfer global divisor.
+
+Ninfer attributes QPN geometry to dnv2003/v100-skinny's skinny_nvfp4_qpn2
+and mma8_probe.cu (MIT licensed kernels; Copyright (c) 2026 v100-skinny
+contributors). That notice and license are in LICENSES/v100-skinny.txt.
+https://github.com/dnv2003/v100-skinny
+
+Ninfer attributes its Volta MMA wrapper to llama.cpp (MIT). The existing
+third_party/ggml/LICENSE retains the ggml/llama.cpp MIT notice.
+The TurboMind shift/rebias decoder mentioned in ninfer's source is not used
+here: this adapter independently constructs E2M1 half bit patterns and applies
+ggml UE4M3 scales, with no shift/rebias or global-divisor convention copied.
+
+Strata's existing code remains covered by LICENSE (MIT); the adapted QPN core
+remains Apache-2.0 with the applicable upstream MIT notices retained. Binary
+distributions containing QPN must include these license texts and this NOTICE.

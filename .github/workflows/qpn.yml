@@ -1,0 +1,70 @@
+name: QPN standalone qualification tools
+on:
+  push:
+    branches: ['qpn/**']
+  pull_request:
+    paths:
+      - '**/*qpn*'
+      - 'cmake/volta_qpn.cmake'
+      - 'CMakeLists.txt'
+      - '.github/workflows/qpn.yml'
+      - 'docker/qpn-runner/**'
+permissions:
+  contents: read
+jobs:
+  docker-runner-image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Docker Compose configuration
+        env:
+          QPN_GPU_UUID: GPU-00000000-0000-0000-0000-000000000000
+        run: docker compose -f docker/qpn-runner/compose.yaml config --quiet
+      - name: Build CUDA runner image (no GPU needed)
+        run: docker build -t strata-qpn-runner:ci docker/qpn-runner
+      - name: Check installed build tools and runner libraries
+        run: |
+          docker run --rm --entrypoint bash strata-qpn-runner:ci -lc '
+            test "$(id -u)" = 10001
+            nvcc --version
+            cmake --version
+            compute-sanitizer --version
+            /opt/runner-template/bin/Runner.Listener --version
+          '
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build-qpn-host -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=ON
+      - run: cmake --build build-qpn-host --target nvfp4_qpn_host_test -j2
+      - run: ctest --test-dir build-qpn-host -R '^nvfp4_qpn_host$' --output-on-failure
+      - run: python3 -m unittest discover -s tools -p test_qpn_audit.py -v
+      - run: python3 -m unittest discover -s tools -p test_qpn_prefill.py -v
+      - name: Test checkpoint fixture extraction in an isolated Python environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qpn-extract-venv"
+          "$RUNNER_TEMP/qpn-extract-venv/bin/python" -m pip install 'numpy>=2,<3'
+          "$RUNNER_TEMP/qpn-extract-venv/bin/python" -m unittest discover -s tools -p 'test_qpn*.py' -v
+      - name: Reject QPN on a CPU-only backend
+        run: |
+          if cmake -S . -B build-qpn-reject -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON; then
+            exit 1
+          fi
+  cuda-compile:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build git g++
+      - uses: actions/checkout@v4
+      - name: Configure isolated sm_70 candidate
+        run: cmake -S . -B build-qpn-cuda -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON
+      - run: cmake --build build-qpn-cuda --target strata_volta_qpn -j2
+      - name: Configure non-Volta control without QPN
+        run: cmake -S . -B build-qpn-sm80 -G Ninja -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=OFF
+      - name: Reject feature on a non-Volta target
+        run: |
+          if cmake -S . -B build-qpn-sm80 -DSTRATA_ENABLE_VOLTA_QPN=ON; then
+            exit 1
+          fi
+# No GPU runner is assumed here. Runtime/sanitizer/model tests must be run on
+# a V100; these jobs do not satisfy the M1/M2/M3/M4 hardware gates.

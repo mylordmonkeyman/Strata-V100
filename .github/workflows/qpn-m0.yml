@@ -1,0 +1,33 @@
+name: QPN full-model baseline
+on:
+  push:
+    branches: ['qpn/full-model-baseline']
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  baseline:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 360
+    env:
+      QPN_CUDA_ROOT: ${{ vars.QPN_CUDA_ROOT || '/usr/local/cuda-12.8' }}
+      QPN_GPU: ${{ vars.QPN_GPU || '0' }}
+      QPN_STATE_DIR: /srv/strata-qpn
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare checkpoint and unchanged baseline engine
+        shell: bash
+        run: bash tools/qpn_m0_ci.sh
+      - name: Upload baseline logs and metadata only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-m0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-m0-results/
+          if-no-files-found: warn
+          retention-days: 14

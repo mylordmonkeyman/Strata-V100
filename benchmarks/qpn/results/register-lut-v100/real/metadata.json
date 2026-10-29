@@ -1,0 +1,95 @@
+{
+  "utc": "2026-10-29T01:55:50.224010+00:00",
+  "binary_sha256": "53762e43308121ff9c824046db974daa528787bc830f41cd83dcb4f6a9c42abd",
+  "blobs": {
+    "/srv/strata-qpn/fixtures/l0-e7.bin": "0364ffd1995b929d0ee5560f7bac513d8d79514b55fc2172cc9ca6086e1efb42",
+    "/srv/strata-qpn/fixtures/l24-e300.bin": "5c05a1a44a61bfaedcd69f7725ba54e1f32bc6f11d9ff397b2a8adf03c8d2883",
+    "/srv/strata-qpn/fixtures/l47-e511.bin": "f23a08bb60434193c85bd7abcaa9e116aa0ed8d3cb55d374841c4de20a3d316f"
+  },
+  "activations_sha256": null,
+  "host": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47
+  ],
+  "git": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "returncode": 0,
+    "stdout": "be323b70f656cf4359e281c2e1540eb42dc896f6\n",
+    "stderr": ""
+  },
+  "gpu_before": {
+    "argv": [
+      "nvidia-smi",
+      "--query-gpu=name,uuid,driver_version,temperature.gpu,clocks.sm,clocks.mem,power.draw,pstate",
+      "--format=csv"
+    ],
+    "returncode": 0,
+    "stdout": "name, uuid, driver_version, temperature.gpu, clocks.current.sm [MHz], clocks.current.memory [MHz], power.draw [W], pstate\nTesla V100-PCIE-32GB, GPU-8bbdb0ea-0a01-5e00-9309-081498b35342, 580.178.04, 41, 1230 MHz, 877 MHz, 39.39 W, P0\n",
+    "stderr": ""
+  },
+  "controls": {
+    "CUDA_VERSION": "12.8.1",
+    "CUDA_VISIBLE_DEVICES": "0",
+    "OMP_NUM_THREADS": "8",
+    "CUDA_MODULE_LOADING": "EAGER"
+  },
+  "configuration": {
+    "binary": "/srv/strata-qpn/builds/a497a16aafe4/nvfp4_volta_qpn_bench",
+    "activations": null,
+    "out": "/runner/_work/Strata-V100/Strata-V100/qpn-results/real",
+    "iterations": 100,
+    "sweep": false,
+    "tokens": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      8,
+      9,
+      16,
+      17,
+      32
+    ],
+    "decoders": [
+      0,
+      1
+    ]
+  },
+  "warning": "single expert working set may fit V100 L2; NOT a multi-expert residency benchmark"
+}

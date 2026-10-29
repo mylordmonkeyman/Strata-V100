@@ -1,0 +1,44 @@
+name: QPN matched real activations
+on:
+  push:
+    branches: ['qpn/real-activations']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  real-activations:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 180
+    env:
+      QPN_CUDA_ROOT: ${{ vars.QPN_CUDA_ROOT || '/usr/local/cuda-12.8' }}
+      QPN_GPU: ${{ vars.QPN_GPU || '0' }}
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_BASELINE_MANIFEST: qpn-baseline-metadata/manifest.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Pin the baseline run whose private captures are being tested. The shared
+      # concurrency group holds this job until that baseline has finished.
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40807283254
+          pattern: qpn-m0-*
+          merge-multiple: true
+          path: qpn-baseline-metadata
+      - name: Test actual routed expert rows
+        shell: bash
+        run: bash tools/qpn_real_ci.sh
+      - name: Upload measurements and provenance only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-real-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-real-results/
+          if-no-files-found: warn
+          retention-days: 14
