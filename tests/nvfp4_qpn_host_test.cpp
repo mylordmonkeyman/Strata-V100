@@ -39,14 +39,14 @@ int main() {
                         require(q::weight_value(data.data() + r * 72, j) == expected, "GGUF boundary/nibble order");
                     }
             }
-    for (int t : {1, 2, 3, 4, 8, 16, 17, 32, 33, 40, 64, 96, 128})
+    for (int t : {1, 2, 3, 4, 8, 16, 17, 32, 33, 40, 64, 96, 128, 187, 508, 512})
         for (int sk : {4, 8})
             for (int acc : {1, 2}) require(q::supported(70, 2560, 640, t, {sk, acc}), "down eligibility");
     require(!q::supported(70, 2560, 640, 8, {16, 1}), "down split16 must fail");
     require(!q::supported(70, 640, 2560, 32, {16, 1}), "64 KiB static shared memory must fail");
     require(q::supported(70, 640, 2560, 16, {16, 2}), "gate split16");
     for (int cc : {0, 60, 75, 80, 90}) require(!q::supported(cc, 640, 2560, 8, {}), "non-Volta");
-    for (int t : {-1, 0, 129}) require(!q::supported(70, 640, 2560, t, {}), "token bounds");
+    for (int t : {-1, 0, 513}) require(!q::supported(70, 640, 2560, t, {}), "token bounds");
     require(!q::supported(70, 639, 2560, 8, {}), "N geometry");
     require(!q::supported(70, 640, 639, 8, {}), "K geometry");
     require(!q::supported(70, 640, 2560, 8, {3, 1}), "split bounds");

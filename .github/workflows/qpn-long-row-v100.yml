@@ -1,4 +1,4 @@
-name: QPN long-row T33-128 V100 qualification
+name: QPN long-row T33-512 V100 qualification
 on:
   push:
     branches: ['qpn/large-route-probe']
@@ -54,7 +54,7 @@ jobs:
           import hashlib,json,pathlib,subprocess
           p=pathlib.Path('qpn-long-row-results/summary.json')
           d=json.loads(p.read_text())
-          assert [r['tokens'] for r in d['results']]==[33,40,48,64,96,97,128]
+          assert [r['tokens'] for r in d['results']]==[33,40,48,64,96,97,128,187,508,512]
           assert all(r['bitwise'] and r['changed_input_graph'] and r['guards'] for r in d['results'])
           d['source_commit']=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
           d['source_sha256']=hashlib.sha256(pathlib.Path('tools/qpn_long_row_probe.cu').read_bytes()).hexdigest()

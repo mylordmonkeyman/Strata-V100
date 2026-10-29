@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 namespace q=strata::kernels::qpn;
-constexpr int N=1280,K=2560,MAX=128,GUARD=256;
+constexpr int N=1280,K=2560,MAX=512,GUARD=256;
 static void ck(cudaError_t e){if(e!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(e));}
 static double duration(cudaStream_t s,const std::function<void()>& f,int reps){
     f();ck(cudaStreamSynchronize(s));
@@ -52,8 +52,8 @@ int main(int argc,char** argv)try{
     cudaStream_t s{};ck(cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking));
     ck(cudaMemcpyAsync(w,weights.data(),W,cudaMemcpyHostToDevice,s));
     const q::Schedule sched{4,1,1,16};
-    const std::vector<int> cases=san?std::vector<int>{33,97}:
-                                      std::vector<int>{33,40,48,64,96,97,128};
+    const std::vector<int> cases=san?std::vector<int>{187,508}:
+                                      std::vector<int>{33,40,48,64,96,97,128,187,508,512};
     std::printf("{\"scope\":\"synthetic QPN large-token experiment, not model/TTFT\","
                 "\"cuda_sm\":70,\"weight_bytes\":%zu,\"results\":[",W);
     bool first=true;
@@ -97,12 +97,20 @@ int main(int argc,char** argv)try{
             }
         };
         check(false);
-        // Change a real routed row after token 32, including all its inputs.
-        for(int k=0;k<K;k++)hx[std::size_t(32)*K+k]^=0x8000u;
+        // Mutate both an early and an actual late row, including all inputs.
+        // This catches accidental truncation at 32 or stale >128 tiles.
+        const int late_row=t-1;
+        for(int k=0;k<K;k++) {
+            hx[std::size_t(32)*K+k]^=0x8000u;
+            hx[std::size_t(late_row)*K+k]^=0x8000u;
+        }
         ck(cudaMemcpyAsync(x,hx.data(),hx.size()*2,cudaMemcpyHostToDevice,s));
         check(true); // CUDA Graph replay also sees changed-input activations.
-        for(int k=0;k<K;k++)hx[std::size_t(32)*K+k]^=0x8000u;
-        const int reps=san?1:64;
+        for(int k=0;k<K;k++) {
+            hx[std::size_t(32)*K+k]^=0x8000u;
+            hx[std::size_t(late_row)*K+k]^=0x8000u;
+        }
+        const int reps=san?1:40;
         const double fused_us=duration(s,full,reps);
         const double segmented_us=duration(s,segmented,reps);
         std::printf("%s{\"tokens\":%d,\"full_us\":%.6f,\"segmented_us\":%.6f,"
