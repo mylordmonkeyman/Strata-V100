@@ -53,7 +53,8 @@ std::vector<int> read_counts(const std::string& name){
         const int n=std::stoi(value);
         if(n<1||n>1024)throw std::runtime_error("group outside valid route bounds");
         c.push_back(n);
-        if(end==std::string::npos)break;start=end+1;
+        if(end==std::string::npos) break;
+        start=end+1;
     }
     if(c.size()!=E||!std::all_of(c.begin(),c.begin()+6,[](int n){return n>32;})||
        !std::all_of(c.begin()+6,c.end(),[](int n){return n<=32;}))
@@ -73,6 +74,58 @@ double l2(const std::vector<float>& a,const std::vector<float>& b){
     }
     return den>0?std::sqrt(num/den):std::numeric_limits<double>::infinity();
 }
+
+struct OracleRow {int row;std::vector<float> values;};
+std::vector<OracleRow> sampled_oracle(const std::vector<uint8_t>& weights,
+            const std::vector<float>& x,const std::array<int,E+1>& bounds){
+    const auto* traits=ggml_get_type_traits(GGML_TYPE_NVFP4);
+    if(!traits||!traits->to_float) throw std::runtime_error("independent GGUF NVFP4 decode unavailable");
+    std::vector<float> gate(size_t(F)*N),up(gate.size()),down(size_t(N)*F);
+    std::vector<OracleRow> result;
+    for(int e=0;e<E;e++){
+        const uint8_t* w=weights.data()+size_t(e)*STRIDE;
+        traits->to_float(w,gate.data(),int64_t(gate.size()));
+        traits->to_float(w+MAT,up.data(),int64_t(up.size()));
+        traits->to_float(w+2*MAT,down.data(),int64_t(down.size()));
+        std::array<float,4> scale{};
+        std::memcpy(scale.data(),w+3*MAT,16);
+        for(int j=0;j<2;j++){
+            const int row=j==0?bounds[e]:bounds[e+1]-1;
+            if(j==1&&row==bounds[e])continue;
+            std::vector<double> hidden(F);
+            const auto* xv=x.data()+size_t(row)*N;
+            for(int r=0;r<F;r++){
+                double g=0,u=0;
+                const auto* gw=gate.data()+size_t(r)*N;
+                const auto* uw=up.data()+size_t(r)*N;
+                for(int k=0;k<N;k++){g+=double(gw[k])*xv[k];u+=double(uw[k])*xv[k];}
+                g*=scale[0];u*=scale[1];
+                const double z=std::exp(-std::abs(g));
+                const double sigmoid=g>=0?1.0/(1.0+z):z/(1.0+z);
+                hidden[r]=g*sigmoid*u;
+            }
+            OracleRow item;item.row=row;item.values.resize(N);
+            for(int r=0;r<N;r++){
+                double v=0;const auto* dw=down.data()+size_t(r)*F;
+                for(int k=0;k<F;k++)v+=double(dw[k])*hidden[k];
+                item.values[r]=float(v*scale[2]);
+            }
+            result.push_back(std::move(item));
+        }
+    }
+    return result;
+}
+double sampled_l2(const std::vector<float>& output,const std::vector<OracleRow>& oracle){
+    double num=0,den=0;
+    for(const auto& item:oracle)for(int r=0;r<N;r++){
+        const float got=output[size_t(item.row)*N+r],want=item.values[r];
+        if(!std::isfinite(got)||!std::isfinite(want))
+            return std::numeric_limits<double>::infinity();
+        const double delta=double(got)-want;
+        num+=delta*delta;den+=double(want)*want;
+    }
+    return den>0?std::sqrt(num/den):std::numeric_limits<double>::infinity();
+}
 double med(std::vector<double> a){
     if(a.size()<5)throw std::runtime_error("at least 5 repetitions required");
     std::sort(a.begin(),a.end());
@@ -84,7 +137,7 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6;bool check_graph=false;
+    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1;bool check_graph=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
@@ -95,15 +148,47 @@ int main(int argc,char** argv)try{
         else if(flag=="--counts")cp=val;
         else if(flag=="--iterations")iterations=std::stoi(val);
         else if(flag=="--rounds")rounds=std::stoi(val);
+        else if(flag=="--qpn-min")qpn_min=std::stoi(val);
         else throw std::invalid_argument("unknown argument");
     }
-    if(wp.empty()||xp.empty()||cp.empty()||iterations<1||iterations>1000||rounds<1||rounds>50)
+    if(wp.empty()||xp.empty()||cp.empty()||iterations<1||iterations>1000||rounds<1||rounds>50||
+       (qpn_min!=1&&qpn_min!=17))
         throw std::invalid_argument("invalid arguments");
-    const auto counts=read_counts(cp);
-    std::array<int,E+1> bounds{};for(int i=0;i<E;i++)bounds[i+1]=bounds[i]+counts[i];
-    const int rows=bounds[E],large=bounds[6],small=rows-large;
-    const auto host_w=read_file(wp,E*STRIDE);
-    const auto host_x=read_file(xp,size_t(rows)*N*4);
+    auto counts=read_counts(cp);
+    const int rows=std::accumulate(counts.begin(),counts.end(),0);
+    auto host_w=read_file(wp,E*STRIDE);
+    auto host_x=read_file(xp,size_t(rows)*N*4);
+    // Reorder the SAME real groups and their exact routed rows for BOTH arms:
+    // MMQ prefix (>32 and <=16) followed by the four 17..32 QPN candidates.
+    // This is an offline layout of a verified private capture, not invented data.
+    if(qpn_min==17){
+        std::vector<int> order;
+        for(int i=0;i<E;i++)if(counts[i]>32||counts[i]<17)order.push_back(i);
+        for(int i=0;i<E;i++)if(counts[i]>=17&&counts[i]<=32)order.push_back(i);
+        if(order.size()!=E)throw std::runtime_error("group permutation misses experts");
+        std::array<int,E+1> original{};
+        for(int i=0;i<E;i++)original[i+1]=original[i]+counts[i];
+        std::vector<uint8_t> new_w(host_w.size()),new_x(host_x.size());
+        std::vector<int> reordered;reordered.reserve(E);
+        size_t next_row=0;
+        for(int src:order){
+            const int n=counts[src];
+            std::memcpy(new_w.data()+reordered.size()*STRIDE,
+                        host_w.data()+size_t(src)*STRIDE,STRIDE);
+            std::memcpy(new_x.data()+next_row*N*4,
+                        host_x.data()+size_t(original[src])*N*4,size_t(n)*N*4);
+            next_row+=size_t(n);reordered.push_back(n);
+        }
+        if(next_row!=size_t(rows))throw std::runtime_error("reorder lost or duplicated rows");
+        host_w.swap(new_w);host_x.swap(new_x);counts.swap(reordered);
+    }
+    const int fallback_groups=qpn_min==17?12:6;
+    std::array<int,E+1> bounds{};
+    for(int i=0;i<E;i++)bounds[i+1]=bounds[i]+counts[i];
+    const int fallback_rows=bounds[fallback_groups],small=rows-fallback_rows;
+    if((qpn_min==17&&(std::any_of(counts.begin(),counts.begin()+12,[](int n){return n>=17&&n<=32;})||
+       std::any_of(counts.begin()+12,counts.end(),[](int n){return n<17||n>32;}))))
+        throw std::runtime_error("nonuniform mixed partition broken");
     std::vector<float> x(size_t(rows)*N);
     std::memcpy(x.data(),host_x.data(),host_x.size());
     for(float v:x)if(!std::isfinite(v)||std::abs(v)>65504.f)
@@ -122,8 +207,8 @@ int main(int argc,char** argv)try{
     if(!m::built()||m::nvfp4_mode()!=m::Nvfp4Mode::W4A8||
        !m::fits(GGML_TYPE_NVFP4,GU)||!m::fits(GGML_TYPE_NVFP4,N))
         throw std::runtime_error("native NVFP4 W4A8 MMQ is unavailable");
-    for(int i=6;i<E;i++)if(!q::supported(70,F,N,counts[i],{4,1,1,0})||
-                             !q::supported(70,N,F,counts[i],{4,1,1,0}))
+    for(int i=fallback_groups;i<E;i++)if(!q::supported(70,F,N,counts[i],{4,1,1,counts[i]>16?16:0})||
+                             !q::supported(70,N,F,counts[i],{4,1,1,counts[i]>16?16:0}))
         throw std::runtime_error("QPN not qualified for selected small group");
     Stream stream;const auto s=stream.s;
     Dev w(host_w.size()),input(host_x.size()),tail(scales.size()*4);
@@ -165,11 +250,12 @@ int main(int argc,char** argv)try{
     const size_t out_bytes=size_t(rows)*N*4;
     auto all=[&](){ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(E);mmq(E,rows);};
     auto mix=[&](){
-        ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(6);mmq(6,large);
-        q::stage_f32(input.as<float>()+size_t(large)*N,xh.as<uint16_t>()+size_t(large)*N,
+        ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(fallback_groups);mmq(fallback_groups,fallback_rows);
+        q::stage_f32(input.as<float>()+size_t(fallback_rows)*N,xh.as<uint16_t>()+size_t(fallback_rows)*N,
                      size_t(small)*N,s);
-        for(int i=6;i<E;i++){
+        for(int i=fallback_groups;i<E;i++){
             const int offset=bounds[i],n=counts[i];
+            const q::Schedule schedule{4,1,1,n>16?16:0};
             auto* src=w.as<uint8_t>()+size_t(i)*STRIDE;
             auto* xv=xh.as<uint16_t>()+size_t(offset)*N;
             auto* gv=gate.as<float>()+size_t(offset)*F;
@@ -178,11 +264,11 @@ int main(int argc,char** argv)try{
             auto* hhalf=hh.as<uint16_t>()+size_t(offset)*F;
             auto* out=y.as<float>()+size_t(offset)*N;
             auto* sc=tail.as<float>()+i*4;
-            q::projection(src,xv,gv,F,N,n,{4,1,1,0},s);
-            q::projection(src+MAT,xv,uv,F,N,n,{4,1,1,0},s);
+            q::projection(src,xv,gv,F,N,n,schedule,s);
+            q::projection(src+MAT,xv,uv,F,N,n,schedule,s);
             q::swiglu(gv,uv,sc,hv,size_t(n)*F,s);
             q::stage_f32(hv,hhalf,size_t(n)*F,s);
-            q::projection(src+2*MAT,hhalf,out,N,F,n,{4,1,1,0},s);
+            q::projection(src+2*MAT,hhalf,out,N,F,n,schedule,s);
             q::scale_down(out,sc,size_t(n)*N,s);
         }
     };
@@ -205,8 +291,13 @@ int main(int argc,char** argv)try{
     all();auto baseline=result();
     mix();auto candidate=result();
     const double cross=l2(candidate,baseline);
-    if(!std::isfinite(cross)||cross>0.06)
-        throw std::runtime_error("mixed/all-MMQ numerical parity failed");
+    const auto oracle=sampled_oracle(host_w,x,bounds);
+    const double all_reference_l2=sampled_l2(baseline,oracle);
+    const double mixed_reference_l2=sampled_l2(candidate,oracle);
+    if(!std::isfinite(cross)||cross>0.06||
+       !std::isfinite(all_reference_l2)||all_reference_l2>0.03||
+       !std::isfinite(mixed_reference_l2)||mixed_reference_l2>0.03)
+        throw std::runtime_error("mixed/MMQ or independent double-precision oracle parity failed");
     check_canary();
     if(check_graph){
         for(int arm=0;arm<2;arm++){
@@ -241,10 +332,12 @@ int main(int argc,char** argv)try{
     }
     check_canary();
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":6,\"qpn_groups\":10,\"routed_rows\":%d,",rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
-    std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"numerics_pass\":true,",cross);
+    std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
+                cross,all_reference_l2,mixed_reference_l2,oracle.size());
     std::printf("\"graph_checked\":%s,\"graph_replay_equal\":%s,\"graph_changed_input_equal\":%s,",
                 check_graph?"true":"false",check_graph?"true":"false",check_graph?"true":"false");
     std::printf("\"output_tail_guard_ok\":true,\"iterations\":%d,\"rounds\":%d,",iterations,rounds);

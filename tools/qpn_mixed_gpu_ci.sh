@@ -35,19 +35,23 @@ args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
       --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt")
 # One CUDA event interval covers full 16-expert work, staging, gathers & launches.
-numactl --cpunodebind=0 --membind=0 "$build/nvfp4_volta_mixed_bench" \
-  "${args[@]}" --rounds 6 --iterations 10 --graph-check \
-  > qpn-mixed-gpu-results/measurement.json
-"$py" -m json.tool qpn-mixed-gpu-results/measurement.json >/dev/null
+for min in 1 17; do
+  numactl --cpunodebind=0 --membind=0 "$build/nvfp4_volta_mixed_bench" \
+    "${args[@]}" --qpn-min "$min" --rounds 6 --iterations 10 --graph-check \
+    > "qpn-mixed-gpu-results/measurement-min${min}.json"
+  "$py" -m json.tool "qpn-mixed-gpu-results/measurement-min${min}.json" >/dev/null
+done
 if ! command -v compute-sanitizer >/dev/null; then
   echo 'Compute Sanitizer unavailable: fail closed' >&2; exit 2
 fi
-numactl --cpunodebind=0 --membind=0 compute-sanitizer \
-  --tool memcheck --error-exitcode 98 --leak-check no \
-  --log-file qpn-mixed-gpu-results/memcheck.log \
-  "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
-  --rounds 1 --iterations 1 --graph-check \
-  > qpn-mixed-gpu-results/memcheck-measurement.json
-grep -q 'ERROR SUMMARY: 0 errors' qpn-mixed-gpu-results/memcheck.log
-"$py" -m json.tool qpn-mixed-gpu-results/memcheck-measurement.json >/dev/null
+for min in 1 17; do
+  numactl --cpunodebind=0 --membind=0 compute-sanitizer \
+    --tool memcheck --error-exitcode 98 --leak-check no \
+    --log-file "qpn-mixed-gpu-results/memcheck-min${min}.log" \
+    "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
+    --qpn-min "$min" --rounds 1 --iterations 1 --graph-check \
+    > "qpn-mixed-gpu-results/memcheck-measurement-min${min}.json"
+  grep -q 'ERROR SUMMARY: 0 errors' "qpn-mixed-gpu-results/memcheck-min${min}.log"
+  "$py" -m json.tool "qpn-mixed-gpu-results/memcheck-measurement-min${min}.json" >/dev/null
+done
 echo 'GPU real mixed-group parity, graph and memcheck gates passed.'
