@@ -1,0 +1,7 @@
+# Mixed-route V100 fixture staging gate
+
+The previous [exact routing audit](results/2026-10-29-mixed-route-host-verified.md) proved 759 complete groups / 30,720 token-expert slots across three pinned unchanged-engine first-prefill captures. This independent gate selects **16 nonuniform expert-layer groups** (shape targets 4, 10, 14, 20, 24, 29, 32, 40, 48, 60, 96, 192, 512 rows), covering 1..8, 9..11, 12..16, 17..32, 33..64, and 65+ buckets.
+
+All selected expert weights are the actual distinct canonical NVFP4 payloads extracted read-only from the private pinned model pack; activation rows are selected directly by the exact original per-expert routing plan. The pinned baseline manifest SHA-256 is checked, and each capture is independently rehashed and verified before selection. The selected group metadata, raw weights, and activations stay under /srv/strata-qpn/mixed-gpu-fixtures outside the checkout. CI uploads only total sizes, counts, and SHA-256 hashes.
+
+The 16 distinct experts consume about 44 MB of NVFP4 weight payloads, exceeding typical V100 L2 capacity, but this alone is **not** a measured cold-cache or transfer result. No GPU timings, numerical parity, grouped graph checks, or sanitizer claims are made by this fixture preparation. A subsequent standalone GPU harness must compare a complete native grouped fallback arm against QPN only for eligible groups with a disjoint fallback prefix; it must measure all grouping, stage and launch costs and fail on any unowned output rows. The production engine and main branch remain unchanged.

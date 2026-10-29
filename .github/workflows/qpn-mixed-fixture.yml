@@ -1,0 +1,51 @@
+name: QPN private nonuniform GPU fixture preparation
+on:
+  push:
+    branches: ['qpn/mixed-route-bench']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  fixture:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 35
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40815727472
+          pattern: qpn-m0-*
+          merge-multiple: true
+          path: qpn-baseline-metadata
+      - name: Validate selection and prepare private real mixed-expert GPU inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          py="$QPN_STATE_DIR/full-model/venv/bin/python"
+          "$py" -m unittest discover -s tools -p test_qpn_mixed_gpu_fixture.py -v
+          mkdir -p "$QPN_STATE_DIR/mixed-gpu-fixtures"
+          "$py" tools/qpn_mixed_gpu_fixture.py \
+            --manifest qpn-baseline-metadata/manifest.json \
+            --captures "$QPN_STATE_DIR/full-model/captures" \
+            --pack "$QPN_STATE_DIR/full-model/prepared/pack" \
+            --private-dir "$QPN_STATE_DIR/mixed-gpu-fixtures/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --summary qpn-mixed-fixture-results/summary.json
+          test -f qpn-mixed-fixture-results/summary.json
+      - name: Upload SHA-256 and group counts only (never weights or activations)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-mixed-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qpn-mixed-fixture-results/
+          if-no-files-found: warn
+          retention-days: 14
