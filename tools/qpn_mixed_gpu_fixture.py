@@ -56,8 +56,34 @@ def choose_groups(plans):
             picked.append(selected)
     if len(picked) != 16 or len(used) != 16:
         raise ValueError("selection does not contain 16 distinct expert-layer groups")
-    if set(LAYERS) != set(per_layer):
-        raise ValueError("missing model layer in selected experts")
+    # Exact nearest-target ties can concentrate all 16 picks in one layer.
+    # Repair layer coverage *within* the original count buckets, preserving
+    # the shape mix and 16 distinct experts. Never fabricate or reuse a group.
+    for absent_layer in (layer for layer in LAYERS if not per_layer[layer]):
+        repairs = []
+        for index, incumbent in enumerate(picked):
+            if per_layer[incumbent["layer"]] <= 1:
+                continue
+            bucket = next((lo, hi) for lo, hi in BOUNDS
+                          if lo <= incumbent["count"] <= hi)
+            for candidate in candidates:
+                if (candidate["layer"] == absent_layer
+                        and bucket[0] <= candidate["count"] <= bucket[1]
+                        and (candidate["layer"], candidate["expert"]) not in used):
+                    repairs.append((abs(candidate["count"]-incumbent["count"]),
+                                    candidate["count"], index, candidate["expert"],
+                                    candidate))
+        if not repairs:
+            raise ValueError("missing model layer in selected experts")
+        _, _, index, _, replacement = min(repairs, key=lambda r: r[:4])
+        incumbent = picked[index]
+        used.remove((incumbent["layer"], incumbent["expert"]))
+        per_layer[incumbent["layer"]] -= 1
+        picked[index] = replacement
+        used.add((replacement["layer"], replacement["expert"]))
+        per_layer[absent_layer] += 1
+    if set(LAYERS) != set(per_layer) or len(used) != 16:
+        raise ValueError("missing model layer or duplicate group after repair")
     # Fallback groups first so native_grouped can operate on a contiguous prefix.
     picked.sort(key=lambda g: (g["count"] <= 32, g["layer"], g["expert"]))
     if not any(g["count"] > 32 for g in picked) or not any(g["count"] <= 32 for g in picked):
