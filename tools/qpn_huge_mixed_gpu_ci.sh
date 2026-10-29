@@ -33,7 +33,7 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 16
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
-      --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu)
+      --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu --qpn-chunkmajor)
 # One CUDA event interval covers full 16-expert work, staging, gathers & launches.
 for min in 129; do
   numactl --cpunodebind=0 --membind=0 "$build/nvfp4_volta_mixed_bench" \
