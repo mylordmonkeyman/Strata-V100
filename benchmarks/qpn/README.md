@@ -6,7 +6,7 @@ and [workflow YAML](../../.github/workflows/qpn-v100.yml).
 This branch contains a **standalone experimental direct-layout candidate**,
 adapted from ninfer's QPN schedule for Strata's canonical NVFP4 expert bytes.
 It does **not** integrate a new engine backend, change expert slots, implement
-runtime QPN environment flags, or claim improved performance. `main` remains
+runtime QPN environment flags, or enable a production speedup. `main` remains
 at upstream baseline `2c9b1dd7bda3102c4a8e65fbe56c45f5c6882926`.
 
 The [rev-3 specification](specification-rev3.md) governs subsequent milestones.
@@ -27,8 +27,11 @@ standalone experiment, not the engine's device-count grouped dispatch.
 have write guards, and graph replay also checks a changed input image.
 The [first prefill crossover](results/prefill-first/README.md) confirms NVFP4
 W4A8 MMQ is executable on this V100 build. Initial QPN only narrowly wins at
-T=16; other sizes favor MMQ. The next schedule sweep balances K chunks across
-warps (especially GU split16 and down split8) and tests actual streaming sets.
+T=16; other sizes favor MMQ. The [balanced schedule sweep](results/balanced-split/README.md) now passes all
+348 configurations and nine sanitizer invocations. Best observed uniform batch
+speedup is 2.407x; isolated single-expert decode sizes still mostly lose.
+The [pinned full-model baseline](M0-baseline.md) gathers actual activation/routing
+evidence in the 48 GiB Docker memory scenario before any production integration.
 
 ## What is implemented
 

@@ -29,3 +29,14 @@ packs, activation vectors, token IDs and logits remain in the private runner
 volume. Failed startup or timeout is retained and stops repeated allocations.
 Successful execution is the start of M0 evidence gathering, not production QPN
 qualification. The standalone kernel and prefill tracks remain independent.
+
+`qpn/real-activations` triggers the matched-row follow-up workflow. Its artifact
+input is pinned to baseline run 40807283254 and is serialized behind that run.
+It verifies the prepared model hashes, verifies the captures against successful
+baseline manifest entries, and extracts the top, median and least-routed active
+experts per captured layer. At most 32 actual rows per expert are retained in
+order, without duplication or synthetic padding. Each expert is tested against
+its own rows at supported sizes, both FP32 and Q8_1 input/hidden staging paths.
+The fixtures, checkpoint and activations stay in the runner volume. The index,
+raw numerical/timing measurements and logs are uploaded. These samples qualify
+part of M2; they do not establish end-to-end quality or mixed-group dispatch.

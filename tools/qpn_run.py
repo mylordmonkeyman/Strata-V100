@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import itertools
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -30,7 +31,9 @@ def command(argv):
 
 
 def summarize(rows):
-    valid = [r for r in rows if r.get("measurement", {}).get("numerics_pass") and r["returncode"] == 0]
+    valid = [r for r in rows if r.get("measurement", {}).get("numerics_pass") and r["returncode"] == 0
+             and "parse_error" not in r and isinstance(r.get("completed_expert_speedup"), (int, float))
+             and math.isfinite(r["completed_expert_speedup"]) and r["completed_expert_speedup"] > 0]
     return {"candidates": len(rows), "passed": len(valid), "failed": len(rows)-len(valid),
             "best_completed_expert_speedup": max((r["completed_expert_speedup"] for r in valid), default=None),
             "decode_gate": "pending mixed-group/real-activation/model/hardware qualification",
@@ -94,6 +97,10 @@ def main():
             try:
                 measurement = json.loads(result["stdout"])
                 result["measurement"] = measurement
+                for key in ("legacy_completed_expert_us", "qpn_completed_expert_us"):
+                    times = measurement[key]
+                    if len(times) < 5 or any(not math.isfinite(v) or v <= 0 for v in times):
+                        raise ValueError("need at least five positive finite timing repetitions")
                 result["completed_expert_speedup"] = statistics.median(measurement["legacy_completed_expert_us"]) / statistics.median(measurement["qpn_completed_expert_us"])
             except (ValueError, KeyError, TypeError, ZeroDivisionError) as exc:
                 result["parse_error"] = str(exc)

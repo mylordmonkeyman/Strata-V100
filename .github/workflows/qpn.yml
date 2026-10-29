@@ -44,7 +44,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/qpn-extract-venv"
           "$RUNNER_TEMP/qpn-extract-venv/bin/python" -m pip install 'numpy>=2,<3'
-          "$RUNNER_TEMP/qpn-extract-venv/bin/python" -m unittest discover -s tools -p test_qpn_extract_hf.py -v
+          "$RUNNER_TEMP/qpn-extract-venv/bin/python" -m unittest discover -s tools -p 'test_qpn*.py' -v
       - name: Reject QPN on a CPU-only backend
         run: |
           if cmake -S . -B build-qpn-reject -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_ENABLE_VOLTA_QPN=ON; then
