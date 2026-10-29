@@ -50,7 +50,7 @@ def main():
         cmd=[sys.executable,str(Path(__file__).with_name("qpn_prefill_run.py")),
              str(a.binary),"--blob",str(blob),"--activations",str(activation),
              "--tokens",*map(str,captured_token_buckets(rows)),
-             "--iterations",str(a.iterations),"--qpn-tiles","0","8","16",
+             "--iterations",str(a.iterations),"--qpn-tiles","0","8","16","--graph-check",
              "--out",str(output)]
         res=subprocess.run(cmd,check=False)
         failures+=int(res.returncode!=0)
@@ -63,10 +63,21 @@ def main():
             winner=row.get("selected_backend")
             if winner: counts[winner]+=1
             records.append({"tokens":meas.get("tokens"),"qpn_tile":row.get("qpn_tile"),
+                            "graph_checked":meas.get("graph_checked",False),
+                            "graph_replay_equal":meas.get("graph_replay_equal",False),
+                            "graph_changed_input_equal":meas.get("graph_changed_input_equal",False),
+                            "output_tail_guard_ok":meas.get("output_tail_guard_ok",False),
                             "winner":winner,
                             "qpn_vs_mmq":qualified_ratio(row),
                             "qpn_vs_fp16":qualified_ratio(row,"dequant_fp16_cublas"),
                             "exit_code":row["returncode"]})
+        for row in data:
+            if row.get("graph_check_requested"):
+                vals=row.get("measurement",{})
+                if row["returncode"] or not all(vals.get(k) is True for k in
+                     ("graph_checked","graph_replay_equal","graph_changed_input_equal","output_tail_guard_ok")):
+                    failures+=1
+                    print(f"{stem}: missing/failed CUDA graph or canary qualification",flush=True)
         evidence.append({"layer":item["layer"],"expert":item["expert"],
                          "rows":rows,"cases":records,"returncode":res.returncode})
         print(f"{stem}: {len(records)} cases, exit={res.returncode}",flush=True)

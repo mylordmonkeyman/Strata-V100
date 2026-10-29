@@ -30,6 +30,11 @@ def tile_variants(tokens, choices):
     return [t for t in choices if t == 0 or (tokens >= 12 and t != base)]
 
 
+def graph_check_case(tokens, tile):
+    """Run graph and canary checks only on new multi-CTA boundaries."""
+    return tile == 16 and tokens in (17, 24, 31, 32)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("binary",type=Path)
@@ -37,6 +42,8 @@ def main():
     p.add_argument("--activations",type=Path,help="raw FP32 actual routed rows; each row has 2560 floats")
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--iterations",type=int,default=100)
+    p.add_argument("--graph-check",action="store_true",
+                   help="validate QPN graph/canary at T=17/24/31/32 tile=16")
     p.add_argument("--qpn-tiles",type=int,nargs="+",default=[0],
                    help="0 baseline schedule, plus optional explicit 8/16/32-row CTA tiles")
     p.add_argument("--tokens",type=int,nargs="+",default=[1,2,4,8,16,32,33,64,128,256,512])
@@ -64,9 +71,11 @@ def main():
                       "--qpn-tile",str(tile)]
                 if blob: argv += ["--blob",str(blob)]
                 if activation: argv += ["--activations",str(activation)]
+                if a.graph_check and graph_check_case(t,tile): argv.append("--validate-graph")
                 r=command(argv)
                 r["blob"]=str(blob) if blob else "synthetic"
                 r["qpn_tile"]=tile
+                r["graph_check_requested"]="--validate-graph" in argv
                 try:
                     r["measurement"]=json.loads(r["stdout"])
                     r["selected_backend"]=crossover(r["measurement"])

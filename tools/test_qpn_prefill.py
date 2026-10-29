@@ -1,5 +1,5 @@
 import unittest
-from qpn_prefill_run import crossover, captured_token_buckets, tile_variants
+from qpn_prefill_run import crossover, captured_token_buckets, tile_variants, graph_check_case
 
 
 def arm(name, available=True, valid=True, times=None):
@@ -46,6 +46,16 @@ class TokenTileSweepTest(unittest.TestCase):
         self.assertEqual(tile_variants(16,vs),[0,8])
         self.assertEqual(tile_variants(29,vs),[0,8,16])
         self.assertEqual(tile_variants(32,vs),[0,8,16])
+
+
+class GraphBoundarySelectionTest(unittest.TestCase):
+    def test_only_multicta_boundaries(self):
+        for t in (17,24,31,32):
+            self.assertTrue(graph_check_case(t,16))
+            self.assertFalse(graph_check_case(t,8))
+            self.assertFalse(graph_check_case(t,0))
+        for t in (1,8,12,16,29):
+            self.assertFalse(graph_check_case(t,16))
 
 
 if __name__=="__main__": unittest.main()

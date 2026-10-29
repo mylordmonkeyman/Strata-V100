@@ -38,3 +38,20 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$build" --target nvfp4_volta_prefill_bench -j 8
 numactl --cpunodebind=0 --membind=0 "$py" tools/qpn_prefill_real_run.py \
   --binary "$build/nvfp4_volta_prefill_bench" --fixtures "$fixtures" --out "$report/candidates"
+
+# Check disjoint CTA tiles under Compute Sanitizer after ordinary benchmarks.
+# We retain gpu.lock and never upload model/activation bytes to Actions.
+if ! command -v compute-sanitizer >/dev/null 2>&1; then
+  echo 'Compute Sanitizer unavailable: fail closed'
+  exit 2
+fi
+for t in 17 31; do
+  numactl --cpunodebind=0 --membind=0 compute-sanitizer \
+    --tool memcheck --error-exitcode 98 --leak-check no \
+    --log-file "$report/sanitizer-t${t}.log" \
+    "$build/nvfp4_volta_prefill_bench" \
+    --blob "$fixtures/l0-e43.bin" --activations "$fixtures/l0-e43.f32" \
+    --tokens "$t" --iterations 1 --qpn-tile 16 --validate-graph \
+    > "$report/sanitizer-t${t}.json"
+  echo "compute-sanitizer T=${t}: exit=0"
+done
