@@ -75,6 +75,19 @@ void swiglu(const float* gate, const float* up, const float* tail,
  // Opt-in widened [rows, 2*ff] FP32 GU -> FP16 [rows,ff] hidden.
 void swiglu_stage_half(const float* gu, const float* tail, std::uint16_t* hidden_half,
                        int rows, int ff, void* stream);
+
+// Opt-in experimental 16-expert ragged pack/compute/scatter support. The
+// caller preserves host-validated exclusive routing ownership. Bounds are
+// absolute offsets for the group (groups+1); padded rows never scatter.
+// All outputs are caller-owned, no allocations or cache/pack changes.
+void ragged_gather_half(const std::uint16_t* source, const int32_t* source_rows,
+                        const int32_t* absolute_bounds, std::uint16_t* packed,
+                        int groups, int source_token_count, int total_routed_rows,
+                        void* stream);
+void ragged_swiglu_stage_half(const float* packed_gu, const float* per_expert_scales,
+                              std::uint16_t* packed_hidden, int groups, void* stream);
+void ragged_scatter_f32(const float* packed, const int32_t* absolute_bounds,
+                        float* output, int groups, int total_routed_rows, void* stream);
 void scale_down(float* output, const float* tail, std::size_t count, void* stream);
 // Standalone qualification probe: output[scale*16+code], 128 canonical scales.
 void decoder_probe(float* output, void* stream);

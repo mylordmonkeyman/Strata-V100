@@ -51,6 +51,51 @@ __global__ void swiglu_stage_half_kernel(const float* gu, const float* tail,
     const float sigmoid=g>=0 ? 1.0f/(1.0f+e) : e/(1.0f+e);
     hidden[i]=__float2half_rn((g*sigmoid)*u);
 }
+// Ragged staged-prefill experiment: every CTA owns an output index; padded
+// 32-row experts have no valid output owner beyond their actual bounds.
+__global__ void ragged_gather_half_kernel(const half* source, const int32_t* source_rows,
+                                           const int32_t* bounds, half* packed,
+                                           int groups, int source_tokens, int total_rows) {
+    constexpr int width=2560, pad=32;
+    const std::size_t i=std::size_t(blockIdx.x)*blockDim.x + threadIdx.x;
+    if(i>=std::size_t(groups)*pad*width)return;
+    const int expert=int(i/(pad*width)), local=int(i%(pad*width));
+    const int row=local/width, col=local%width;
+    const int start=bounds[expert],end=bounds[expert+1];
+    if(start<0 || end<start || end-start>pad || end>total_rows)
+        asm volatile("trap;");
+    if(row>=end-start) {
+        packed[i]=__float2half_rn(0.f);
+        return;
+    }
+    const int src=source_rows[start+row];
+    if(src<0 || src>=source_tokens)asm volatile("trap;");
+    packed[i]=source[std::size_t(src)*width+col];
+}
+__global__ void ragged_swiglu_stage_half_kernel(const float* gu, const float* scales,
+                                                 half* hidden, int groups) {
+    constexpr int pad=32, ff=640, gu_n=2*ff;
+    const std::size_t i=std::size_t(blockIdx.x)*blockDim.x + threadIdx.x;
+    if(i>=std::size_t(groups)*pad*ff)return;
+    const int expert=int(i/(pad*ff)), inner=int(i%(pad*ff));
+    const int row=inner/ff,col=inner%ff;
+    const float* r=gu+(std::size_t(expert)*pad+row)*gu_n;
+    const float g=r[col]*scales[expert*4],u=r[ff+col]*scales[expert*4+1];
+    const float ex=expf(-fabsf(g));
+    const float sigmoid=g>=0 ? 1.0f/(1.0f+ex) : ex/(1.0f+ex);
+    hidden[i]=__float2half_rn((g*sigmoid)*u);
+}
+__global__ void ragged_scatter_f32_kernel(const float* packed,const int32_t* bounds,
+                                           float* output,int groups,int total_rows) {
+    constexpr int width=2560,pad=32;
+    const std::size_t i=std::size_t(blockIdx.x)*blockDim.x + threadIdx.x;
+    if(i>=std::size_t(groups)*pad*width)return;
+    const int expert=int(i/(pad*width)),inner=int(i%(pad*width));
+    const int start=bounds[expert],end=bounds[expert+1],row=inner/width;
+    if(start<0 || end<start || end-start>pad || end>total_rows)
+        asm volatile("trap;");
+    if(row<end-start)output[(std::size_t(start)+row)*width+inner%width]=packed[i];
+}
 __global__ void down_kernel(float* output, const float* tail, std::size_t count) {
     const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < count) output[i] *= tail[2];
@@ -161,6 +206,37 @@ void swiglu_stage_half(const float* gu, const float* tail, std::uint16_t* hidden
     const std::size_t count=std::size_t(rows)*std::size_t(ff);
     swiglu_stage_half_kernel<<<grid(count),threads,0,static_cast<cudaStream_t>(stream)>>>(
         gu,tail,reinterpret_cast<half*>(hidden_half),count,ff);
+    check();
+}
+void ragged_gather_half(const std::uint16_t* source,const int32_t* source_rows,
+                        const int32_t* bounds,std::uint16_t* packed,
+                        int groups,int source_tokens,int total_rows,void* stream) {
+    if(!source||!source_rows||!bounds||!packed||groups<1||groups>16||
+       source_tokens<1||total_rows<1)
+        throw std::invalid_argument("invalid grouped QPN gather shape");
+    constexpr std::size_t count_per_group=32u*2560u;
+    ragged_gather_half_kernel<<<grid(std::size_t(groups)*count_per_group),threads,0,
+        static_cast<cudaStream_t>(stream)>>>(
+        reinterpret_cast<const half*>(source),source_rows,bounds,
+        reinterpret_cast<half*>(packed),groups,source_tokens,total_rows);
+    check();
+}
+void ragged_swiglu_stage_half(const float* gu,const float* scales,
+                              std::uint16_t* hidden,int groups,void* stream) {
+    if(!gu||!scales||!hidden||groups<1||groups>16)
+        throw std::invalid_argument("invalid grouped QPN SwiGLU shape");
+    ragged_swiglu_stage_half_kernel<<<grid(std::size_t(groups)*32*640),threads,0,
+        static_cast<cudaStream_t>(stream)>>>(
+        gu,scales,reinterpret_cast<half*>(hidden),groups);
+    check();
+}
+void ragged_scatter_f32(const float* packed,const int32_t* bounds,
+                        float* output,int groups,int total_rows,void* stream) {
+    if(!packed||!bounds||!output||groups<1||groups>16||total_rows<1)
+        throw std::invalid_argument("invalid grouped QPN scatter shape");
+    ragged_scatter_f32_kernel<<<grid(std::size_t(groups)*32*2560),threads,0,
+        static_cast<cudaStream_t>(stream)>>>(
+        packed,bounds,output,groups,total_rows);
     check();
 }
 void scale_down(float* output, const float* tail, std::size_t count, void* stream) {
