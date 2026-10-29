@@ -110,7 +110,9 @@ int main(int argc,char** argv) try {
     std::vector<std::uint8_t> hgu=make_weights(groups,WGU),hd=make_weights(groups,WD);
     std::vector<float> hscales(std::size_t(groups)*4,1.f);
     auto* dgu=dev<std::uint8_t>(hgu.size()),*dd=dev<std::uint8_t>(hd.size());
-    auto* dx=dev<half>(input.size()),*ids=dev<int32_t>(rowmap.size()),*db=dev<int32_t>(bounds.size());
+    auto* dx=dev<half>(input.size());
+    auto* ids=dev<int32_t>(rowmap.size());
+    auto* db=dev<int32_t>(bounds.size());
     auto* ds=dev<float>(hscales.size());
     auto* px=dev<half>(std::size_t(groups)*PAD*N),*ph=dev<half>(std::size_t(groups)*PAD*FF);
     auto* pgu=dev<float>(std::size_t(groups)*PAD*GU),*py=dev<float>(std::size_t(groups)*PAD*N);
