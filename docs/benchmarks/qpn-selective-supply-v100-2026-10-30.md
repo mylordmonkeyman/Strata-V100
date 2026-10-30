@@ -61,9 +61,59 @@ The older diagnostic workflow remains manually dispatchable; its automatic push
 trigger is removed so this hook does not launch redundant GPU diagnostics. The
 existing hourly optimization automation is unchanged.
 
-Results are pending. A positive timing result still needs repeated controlled
+A positive timing result would still need repeated controlled
 measurements, changed-input/Graph and independent oracle/guards plus sanitizer
 qualification of the new supply path before any integration or quality claim.
 Existing standalone fixture sanitizer passes do not qualify this new model path.
 If practical supply savings don't produce a reproducible material advantage, stop
 QPN layout variants; do not infer a QPN gain from MMQ-only supply improvements.
+
+
+## Completed ABBA: transfer reduction, no material prefill benefit
+
+Source `d777b85efadb5a359ebbb7ebb68e88e475f20cc9`, [V100 run
+41066208726](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41066208726),
+aggregate artifact `12982683441`. The host tests and GPU workflow succeeded.
+The committed typed aggregate is
+`benchmarks/qpn/results/2026-10-30-selective-mmq-supply-abba.json`.
+Executable SHA256 `29130300738240816341c31de5b177eb7e59a5c205bd7b640ac5992f56c58a3d`.
+
+All four processes completed 2047 prefill tokens, exited zero, and reported zero
+QPN execution. All six within/cross-arm first-logit comparisons were bytewise
+identical over 248,320 FP32 elements (L2/KL zero, argmax equal). Every run exercised
+all 48 transition fallback layers. Every first chunk had the same 15,347 scheduled
+entries and 42,431,631,152 scheduled compressed bytes, with 6,027 staging jobs.
+
+| Measurement | Baseline A | Selective B |
+|---|---:|---:|
+| First-chunk transferred bytes | 42,431,631,152 (both runs) | 28,831,501,248 / 28,825,971,616 |
+| First-chunk skipped experts | 0 | 4,919 / 4,921 |
+| Skipped experts whose host jobs were still drained | 0 | 2,533 / 2,529 |
+| Prefill times (ms) | 17077.8 / 17305.9 | 16849.2 / 17291.6 |
+| Median prefill time (ms) | 17191.85 | 17070.40 |
+
+The selective arm omitted about **13.60 GB / 32.1%** of first-chunk H2D, but
+median prefill throughput was only **1.007115x** baseline (~0.71%). The 121.45-ms
+median difference is smaller than either arm's observed timing range (228.1 /
+442.4 ms). This single ABBA does not establish a reproducible material improvement.
+TTFT medians (60,926.25 / 58,551.60 ms) reflect uncontrolled fresh-process startup;
+particularly the first baseline's 63,238.1 ms. Do not claim a validated TTFT gain.
+Transfer counters cover the first stream-all chunk, not the staged continuation.
+
+**Decision:** retain this as a default-off, unqualified experimental negative result;
+do not integrate it into production or spend further GPU time qualifying/promoting
+it. Stop further QPN layout/arithmetic variants: resident-only wins, matched async
+parity, and now large realistic DMA savings without a material prefill win do not
+justify them. The experiment does not isolate whether unchanged CPU staging reads,
+compute, or another component dominates the remaining critical path; it is not
+proof that all selective-supply approaches can never help. Any new hypothesis needs
+new evidence and its own matched control, not extrapolation from bytes saved.
+
+The independent rev4.1 Q4 kernel/quantization track is the next eligible development
+track, with separate artifact provenance, within-Q4 kernel-vs-MMQ gates and numerical
+qualification. No below-4-bit artifact or reinterpretation of NVFP4 as Q4 is allowed.
+The core QPN D4 numerical-alignment task and full-model quality remain unqualified;
+neither is silently waived. No full-model sanitizer, changed-input Graph, intermediate
+output-guard or independent GGUF FP64 qualification was performed for this discarded
+supply prototype. Original model/cache, production defaults, main, host services and
+runner privileges remain unchanged. The existing hourly automation is retained.
