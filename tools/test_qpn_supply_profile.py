@@ -1,6 +1,6 @@
 import json
 import unittest
-from qpn_supply_profile import parse_traces, duration, overlap, PREFIX, KINDS
+from qpn_supply_profile import parse_traces, duration, overlap, PREFIX, KINDS, transition_bypass_count
 
 class SupplyProfileTest(unittest.TestCase):
     def trace(self):
@@ -31,6 +31,15 @@ class SupplyProfileTest(unittest.TestCase):
     def test_unavailable_routes_remain_null(self):
         t=self.trace(); t['layers'][0]['routed']=None
         self.assertIsNone(self.parse(t)[0]['layers'][0]['routed'])
+    def test_transition_counter_requires_one_nonnegative_aggregate(self):
+        self.assertEqual(transition_bypass_count(
+            'private diagnostic line\nstrata qpn gg transition: disabled_staged_layers=48\n'), 48)
+        for raw in ('', 'strata qpn gg transition: disabled_staged_layers=-1\n',
+                    'strata qpn gg transition: disabled_staged_layers=1\n'
+                    'strata qpn gg transition: disabled_staged_layers=2\n'):
+            with self.assertRaises(ValueError):
+                transition_bypass_count(raw)
+
     def test_duplicate_layers_rejected(self):
         t=self.trace(); t['layers']*=2
         with self.assertRaises(ValueError): self.parse(t)
