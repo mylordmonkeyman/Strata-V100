@@ -17,7 +17,8 @@ class BreakEvenTests(unittest.TestCase):
     def test_qualified_fast_passes(self):
         x=self.base()
         x.update(independent_heldout_qualified=True,
-                 actual_decode_qualified=True, numerical_quality_qualified=True)
+                 actual_decode_qualified=True, numerical_quality_qualified=True,
+                 critical_path_measured_qualified=True, memory_fit_measured_qualified=True)
         self.assertEqual(assess(x)["decision"], "PASS")
 
     def test_slow_fails(self):
@@ -29,6 +30,36 @@ class BreakEvenTests(unittest.TestCase):
         x=self.base()
         x["packed_bytes"]=201
         self.assertEqual(assess(x)["decision"], "FAIL")
+
+    def test_known_memory_failure_even_with_missing_timings(self):
+        self.assertEqual(assess({"packed_bytes": 201, "safe_headroom_bytes": 200})["decision"], "FAIL")
+
+    def test_missing_measured_qualification_is_unknown(self):
+        x = self.base()
+        x.update(independent_heldout_qualified=True,
+                 actual_decode_qualified=True, numerical_quality_qualified=True)
+        self.assertEqual(assess(x)["decision"], "UNKNOWN")
+        self.assertIn("memory_fit_measured_qualified", assess(x)["unqualified_gates"])
+
+    def test_reject_nonfinite_or_bool_timings(self):
+        for bad in (float("nan"), float("inf"), True, -1):
+            x = self.base()
+            x["mmq_prefill_s"] = bad
+            with self.assertRaises(ValueError):
+                assess(x)
+
+    def test_reject_string_qualification(self):
+        x = self.base()
+        x["actual_decode_qualified"] = "true"
+        with self.assertRaises(ValueError):
+            assess(x)
+
+    def test_737_mib_aggregate_evidence_stays_unknown(self):
+        r = assess({"safe_headroom_bytes": 737 * 1048576,
+                    "independent_heldout_qualified": False,
+                    "actual_decode_qualified": False})
+        self.assertEqual(r["decision"], "UNKNOWN")
+        self.assertIn("qpn_prefill_exposed_s", r["missing_measurements"])
 
     def test_missing_is_unknown(self):
         x=self.base()

@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "safe_headroom_bytes": 772800512,
+  "independent_heldout_qualified": false,
+  "actual_decode_qualified": false,
+  "numerical_quality_qualified": false,
+  "critical_path_measured_qualified": false,
+  "memory_fit_measured_qualified": false
+}
