@@ -111,7 +111,7 @@ def main():
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
         p.add_argument('--'+name, required=True, type=Path)
     p.add_argument('--repeatability', action='store_true',
-                   help='diagnose 1024 off/off repeatability and inline-issuer off/on parity')
+                   help='isolate 768 staged, 1024 forced-staged, and 1024 inline stream-all repeatability')
     a = p.parse_args()
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -138,18 +138,25 @@ def main():
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False)+'\n')
     save()
-    experiments = ([(1024, 'threaded-repeat', '1', ((False, 'off-a'), (False, 'off-b'))),
-                    (1024, 'inline-trace', '0', ((False, 'off'), (True, 'trace')))]
+    # After the pinned 1024 trace-off/off threaded run itself failed parity,
+    # isolate chunk size, stream-all selection and issuer scheduling WITHOUT
+    # changing engine code, weight supply, prompt, or model cache.
+    # Both runs in every pair disable tracing. 1024 with stream_min=4096
+    # forces the existing staged supply path instead of stream-all.
+    experiments = ([(768, 'staged-threaded-repeat', '1', '1024', ((False, 'off-a'), (False, 'off-b'))),
+                    (1024, 'forced-staged-threaded-repeat', '1', '4096', ((False, 'off-a'), (False, 'off-b'))),
+                    (1024, 'stream-all-inline-repeat', '0', '1024', ((False, 'off-a'), (False, 'off-b')))]
                    if a.repeatability else
-                   [(n, 'standard', '1', ((False, 'off'), (True, 'trace'))) for n in (768, 1024)])
+                   [(n, 'standard', '1', '1024', ((False, 'off'), (True, 'trace'))) for n in (768, 1024)])
     summary['repeatability_diagnostic'] = a.repeatability
     parity_failed = False
-    for prefill, experiment, issuer, variants in experiments:
+    for prefill, experiment, issuer, stream_min, variants in experiments:
         pair = []
         for trace, variant in variants:
             label = f'{prefill}-{experiment}-{variant}'
             env = base.copy()
             env['STRATA_PREFILL_ISSUER'] = issuer
+            env['STRATA_PREFILL_STREAM_MIN'] = stream_min
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             cmd = [str(a.binary), '--pack', str(a.prepared/'pack'), '--native', str(a.prepared/'dense.gguf'),
@@ -166,7 +173,7 @@ def main():
                                           stdout=f, stderr=subprocess.STDOUT, timeout=1100).returncode
                 except subprocess.TimeoutExpired:
                     code = 124
-            row = dict(prefill=prefill, experiment=experiment, issuer=issuer, variant=variant,
+            row = dict(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min, variant=variant,
                        trace=trace, returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
@@ -191,7 +198,7 @@ def main():
             print(f'MMQ supply diagnostic prefill={prefill} trace={trace} completed', flush=True)
             save()
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
-        metrics.update(prefill=prefill, experiment=experiment, issuer=issuer)
+        metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min)
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
@@ -200,7 +207,8 @@ def main():
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = 'diagnostic_complete_quality_unqualified'
+    summary['status'] = ('isolation_controls_passed_prior_threaded_failure_unresolved' if a.repeatability
+                         else 'diagnostic_complete_quality_unqualified')
     save()
     return 0
 
