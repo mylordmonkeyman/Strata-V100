@@ -2979,6 +2979,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    // Diagnostic-only MMQ guard: track a stream-all -> staged transition within this
+    // run_impl invocation, not by absolute token position or process-global state.
+    // This is off by default and does not change the normal MMQ path.
+    static const bool gg_diag_transition_fallback = [] {
+        const char* v = std::getenv("STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK");
+        return v && std::atoi(v) != 0;
+    }();
+    bool saw_stream_all_chunk = false;
+    int64_t gg_transition_disabled_staged_layers = 0;
     if (hand_in_ == nullptr) stopped_at_ = -1;
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
@@ -3173,6 +3182,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const strata::kernels::cpu::ExpertLayout& lay0 = strata::kernels::cpu::expert_layout();
         const bool stream_all = m.ring > STAGE && T >= stream_all_min() && m.src != nullptr;
+        const bool staged_after_stream_all = !stream_all && saw_stream_all_chunk;
+        saw_stream_all_chunk = saw_stream_all_chunk || stream_all;
         QpnSupplyTrace supply(!m.pp && next_ == nullptr, m.cs, m.copy);
         // the CPU share: this chunk takes the pool if no other stage of a layer split has it now (released at the end
         // of the chunk, after the last layer's CPU thread is joined)
@@ -4931,7 +4942,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // then STAGE_GRP slots, two groups, and it stages no further ahead than the open group allows,
                         // so a group's staged slots stay unread-over until its flush (one wait on the last copy, one
                         // event releasing them all, as in the streamed walk).
-                        const bool group_resident = group_env && !gg_diag_disable_staged &&
+                        // Preserve grouped gather in stream-all chunks, but opt-in to the
+                        // known repeatable ungrouped staged path after a stream-all chunk.
+                        // Do not disable grouping for entirely staged prompts.
+                        const bool transition_bypass = gg_diag_transition_fallback && staged_after_stream_all &&
+                                                       group_env && !gg_diag_disable_staged && use_mmq && lay.native &&
+                                                       MMQ_GROUP <= mmq::kGatherGroupMax;
+                        if (transition_bypass) ++gg_transition_disabled_staged_layers;
+                        const bool group_resident = group_env && !gg_diag_disable_staged && !transition_bypass &&
                                                     !stream_all && use_mmq && lay.native &&
                                                     MMQ_GROUP <= mmq::kGatherGroupMax;
                         const bool gg_now = group_gather || group_resident;
@@ -5915,6 +5933,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // before returning, including after a hook failure. run_impl() leaves the tail in flight so the direct
     // successor can accept the next chunk without waiting for every later stage.
     if (on_stage_complete && !on_stage_complete(pos0 + n, err)) return false;
+    if (gg_diag_transition_fallback)
+        std::fprintf(stderr, "strata qpn gg transition: disabled_staged_layers=%lld\n",
+                     (long long) gg_transition_disabled_staged_layers);
     stats_.ms_total += ms_since(t_start);
     {
         static const bool f16_range = std::getenv("STRATA_F16_RANGE") != nullptr;

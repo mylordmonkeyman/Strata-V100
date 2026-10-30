@@ -126,10 +126,12 @@ def main():
                    help='isolate batched native gather kernel from stream-all grouped slot protocol')
     p.add_argument('--gather-chunk-repeat', action='store_true',
                    help='separate stream-all and staged chunk grouped gather, including same-binary controls')
+    p.add_argument('--gather-transition-repeat', action='store_true',
+                   help='qualify opt-in transition-scoped MMQ fallback against two bitwise reference arms')
     p.add_argument('--layer-repeat', action='store_true',
                    help='repeat stream-all using existing private per-layer captures to locate divergence')
     a = p.parse_args()
-    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat, a.gather_repeat, a.gather_sync_repeat, a.gather_mode_repeat, a.gather_event_repeat, a.gather_kernel_repeat, a.gather_chunk_repeat)) > 1:
+    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat, a.gather_repeat, a.gather_sync_repeat, a.gather_mode_repeat, a.gather_event_repeat, a.gather_kernel_repeat, a.gather_chunk_repeat, a.gather_transition_repeat)) > 1:
         raise ValueError('diagnostic modes are mutually exclusive')
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -200,6 +202,10 @@ def main():
         experiments = [(1024, name, '1', '1024', ((False, 'off-a'), (False, 'off-b'))) for name in (
             'grouped-stream-only', 'grouped-staged-only', 'grouped-both-off', 'grouped-both-on')]
         summary['scope'] = 'MMQ grouped gather chunk-specific opt-in controls and same-binary baselines; no QPN or speed claim'
+    if a.gather_transition_repeat:
+        experiments = [(1024, name, '1', '1024', ((False, 'off-a'), (False, 'off-b'))) for name in (
+            'transition-fallback', 'grouped-stream-only', 'grouped-both-off')]
+        summary['scope'] = 'MMQ transition-scoped grouped-gather fallback, strict repeat and cross-arm bitwise parity; no QPN or speed claim'
     summary['restored_nan_recipe'] = True
     summary['workaround_repeat_diagnostic'] = a.workaround_repeat
     summary['gather_repeat_diagnostic'] = a.gather_repeat
@@ -208,6 +214,7 @@ def main():
     summary['gather_event_repeat_diagnostic'] = a.gather_event_repeat
     summary['gather_kernel_repeat_diagnostic'] = a.gather_kernel_repeat
     summary['gather_chunk_repeat_diagnostic'] = a.gather_chunk_repeat
+    summary['gather_transition_repeat_diagnostic'] = a.gather_transition_repeat
     summary['repeatability_diagnostic'] = a.repeatability
     summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
@@ -234,10 +241,12 @@ def main():
             if a.gather_kernel_repeat:
                 env['STRATA_PREFILL_GROUP_GATHER'] = '1'
                 env['STRATA_QPN_DIAG_GG_SERIAL_GATHER'] = '1'
-            if a.gather_chunk_repeat:
+            if a.gather_chunk_repeat or a.gather_transition_repeat:
                 env['STRATA_PREFILL_GROUP_GATHER'] = '1'
                 env['STRATA_QPN_DIAG_GG_DISABLE_STREAM'] = str(int(experiment in ('grouped-staged-only', 'grouped-both-off')))
                 env['STRATA_QPN_DIAG_GG_DISABLE_STAGED'] = str(int(experiment in ('grouped-stream-only', 'grouped-both-off')))
+            if a.gather_transition_repeat:
+                env['STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK'] = str(int(experiment == 'transition-fallback'))
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             if a.layer_repeat:
@@ -260,13 +269,14 @@ def main():
                 except subprocess.TimeoutExpired:
                     code = 124
             row = dict(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min, variant=variant,
-                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat) else 'default',
+                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat or a.gather_transition_repeat) else 'default',
                        step_sync=bool(a.gather_sync_repeat),
                        ready_wait_each=env.get('STRATA_QPN_DIAG_GG_WAIT_EACH') == '1',
                        release_each=env.get('STRATA_QPN_DIAG_GG_RELEASE_EACH') == '1',
                        serial_gather=env.get('STRATA_QPN_DIAG_GG_SERIAL_GATHER') == '1',
                        disable_stream_gather=env.get('STRATA_QPN_DIAG_GG_DISABLE_STREAM') == '1',
                        disable_staged_gather=env.get('STRATA_QPN_DIAG_GG_DISABLE_STAGED') == '1',
+                       transition_fallback=env.get('STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK') == '1',
                        trace=trace, returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
@@ -277,6 +287,16 @@ def main():
             raw = log.read_text(errors='replace')
             if re.search(r'non[- ]finite|illegal memory access|CUDA error|device-side assert', raw, re.I):
                 summary['status'] = 'failed_safety'; save(); return 2
+            if a.gather_transition_repeat:
+                matches = re.findall(r'^strata qpn gg transition: disabled_staged_layers=(\\d+)$', raw, re.M)
+                if experiment == 'transition-fallback':
+                    if len(matches) != 1 or int(matches[0]) <= 0:
+                        summary['status'] = 'failed_transition_not_exercised'; save(); return 2
+                    row['transition_disabled_staged_layers'] = int(matches[0])
+                elif matches:
+                    summary['status'] = 'failed_unexpected_transition_diagnostic'; save(); return 2
+                if row['prefill_tokens'] != 2047:
+                    summary['status'] = 'failed_incomplete_transition_work'; save(); return 2
             v = logits(out_logits)  # mandatory size and finite checks, private values
             pair.append(v)
             traces = parse_traces(raw)
@@ -290,17 +310,19 @@ def main():
                 row['trace_chunks'] = len(traces)
             print(f'MMQ supply diagnostic prefill={prefill} trace={trace} completed', flush=True)
             save()
-        if a.gather_chunk_repeat and experiment in ('grouped-stream-only', 'grouped-both-off'):
+        if (a.gather_chunk_repeat or a.gather_transition_repeat) and experiment in (
+                'transition-fallback', 'grouped-stream-only', 'grouped-both-off'):
             stable_chunk_outputs[experiment] = pair
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
         metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min,
-                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat) else 'default',
+                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat or a.gather_transition_repeat) else 'default',
                        step_sync=bool(a.gather_sync_repeat),
                        ready_wait_each='wait-each' in experiment or 'both-each' in experiment,
                        release_each='release-each' in experiment or 'both-each' in experiment,
                        serial_gather=bool(a.gather_kernel_repeat),
                        disable_stream_gather=experiment in ('grouped-staged-only', 'grouped-both-off'),
-                       disable_staged_gather=experiment in ('grouped-stream-only', 'grouped-both-off'))
+                       disable_staged_gather=experiment in ('grouped-stream-only', 'grouped-both-off'),
+                       transition_fallback=bool(a.gather_transition_repeat and experiment == 'transition-fallback'))
         if a.layer_repeat:
             from qpn_layer_compare import compare_features, compare_residuals, compare_boundaries
             try:
@@ -320,7 +342,7 @@ def main():
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
-            if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat or a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat):
+            if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat or a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat or a.gather_transition_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
         save()
     if a.gather_chunk_repeat:
@@ -342,9 +364,31 @@ def main():
         summary['limitations'].append(
             'cross-arm comparison is a within-model MMQ control, not an independent GGUF FP64 oracle')
         save()
+    if a.gather_transition_repeat:
+        reference = stable_chunk_outputs.get('grouped-both-off')
+        stream_only = stable_chunk_outputs.get('grouped-stream-only')
+        fallback = stable_chunk_outputs.get('transition-fallback')
+        if any(x is None or len(x) != 2 for x in (reference, stream_only, fallback)):
+            summary['status'] = 'failed_missing_transition_reference'; save(); return 3
+        summary['transition_cross_arm_comparisons'] = []
+        for candidate_name, candidate in (('transition-fallback', fallback), ('grouped-stream-only', stream_only)):
+            for i in range(2):
+                d = {k:v for k,v in diff(reference[i], candidate[i]).items()
+                     if k not in ('argmax_base', 'argmax_candidate')}
+                d.update(reference='grouped-both-off', candidate=candidate_name,
+                         variant=('off-a', 'off-b')[i],
+                         bitwise_equal=(reference[i] == candidate[i]))
+                summary['transition_cross_arm_comparisons'].append(d)
+                parity_failed |= not d['bitwise_equal']
+        summary['transition_cross_arm_numerical_quality_qualified'] = False
+        summary['limitations'].append(
+            'transition fallback only tracks preceding stream-all chunks in the same run_impl; '
+            'cross-arm first-logit parity is not an independent GGUF FP64 oracle')
+        save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = ('grouped_chunk_isolation_repeat_passed_prior_failure_unresolved' if a.gather_chunk_repeat
+    summary['status'] = ('transition_fallback_bitwise_parity_passed_quality_unqualified' if a.gather_transition_repeat
+                         else 'grouped_chunk_isolation_repeat_passed_prior_failure_unresolved' if a.gather_chunk_repeat
                          else 'grouped_serial_gather_repeat_passed_prior_failure_unresolved' if a.gather_kernel_repeat
                          else 'grouped_per_slot_event_repeat_passed_prior_failure_unresolved' if a.gather_event_repeat
                          else 'grouped_staged_and_stream_all_repeat_passed_prior_failure_unresolved' if a.gather_mode_repeat
