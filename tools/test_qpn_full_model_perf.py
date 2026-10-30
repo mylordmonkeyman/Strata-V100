@@ -1,5 +1,5 @@
 import unittest
-from qpn_full_model_ab import ab_modes, classify_quality, benchmark_env, NAN_WORKAROUND
+from qpn_full_model_ab import ab_modes, classify_quality, benchmark_env, NAN_WORKAROUND, record_quality
 
 
 class PerformanceFirstABTest(unittest.TestCase):
@@ -38,6 +38,17 @@ class PerformanceFirstABTest(unittest.TestCase):
         a=[{"kl_base_vs_candidate":0.002,"argmax_match":True}]
         self.assertEqual(classify_quality(a,True),("performance_only_quality_observed",True))
         self.assertEqual(classify_quality(a,False),("pass",True))
+
+    def test_passing_first_logits_never_certifies_model_quality(self):
+        comparisons=[dict(kl_base_vs_candidate=.0155,argmax_match=True)]
+        for performance_only in (True,False):
+            s={};record_quality(s,comparisons,performance_only)
+            self.assertTrue(s['first_logit_acceptance_passed'])
+            self.assertFalse(s['numerical_quality_qualified'])
+        s={};record_quality(s,[dict(kl_base_vs_candidate=.044,argmax_match=True)],True)
+        self.assertFalse(s['first_logit_acceptance_passed'])
+        self.assertFalse(s['numerical_quality_qualified'])
+        self.assertEqual(s['status'],'performance_only_quality_unqualified')
 
     def test_top1_disagreement_remains_visible(self):
         a=[{"kl_base_vs_candidate":0.001,"argmax_match":False}]

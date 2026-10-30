@@ -139,11 +139,18 @@ def ab_modes(fusion_ab, batched_ab=False, batched_mmq_ab=False):
 
 
 def classify_quality(comparisons, performance_only):
-    # A performance-only result NEVER asserts numerical acceptance.
+    # This boolean tests the first-logit threshold only, not model qualification.
     quality_ok=all(x["kl_base_vs_candidate"]<0.03 and x["argmax_match"] for x in comparisons)
     if quality_ok:
         return ("performance_only_quality_observed" if performance_only else "pass"), quality_ok
     return ("performance_only_quality_unqualified" if performance_only else "failed_first_logits_quality"), quality_ok
+
+
+def record_quality(summary, comparisons, performance_only):
+    status, first_logit_ok = classify_quality(comparisons, performance_only)
+    summary.update(status=status, first_logit_acceptance_passed=first_logit_ok,
+                   numerical_quality_qualified=False)
+    # Two first-logit comparisons cannot certify full-model numerical quality.
 
 
 def main():
@@ -300,8 +307,7 @@ def main():
         "candidate":statistics.median(r["prefill_ms"] for r in summary["runs"] if r["mode"]==modes[1])}
     c=summary["median_prefill_ms"]
     summary["median_prefill_speedup"]=c["control"]/c["candidate"]
-    summary["status"],summary["numerical_quality_qualified"]=classify_quality(
-        summary["comparisons"],a.performance_only)
+    record_quality(summary,summary["comparisons"],a.performance_only)
     # Performance-only mode still fails closed on startup, missing QPN execution,
     # absent logits, or nonfinite numerical output. It simply records an
     # otherwise failing first-logit acceptance criterion as unqualified.

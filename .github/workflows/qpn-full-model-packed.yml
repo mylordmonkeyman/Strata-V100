@@ -1,15 +1,5 @@
 name: QPN offline-prepacked full-model staged prefill ABBA
 on:
-  push:
-    branches: ['qpn/prepacked-stream']
-    paths:
-      - 'src/prefill/prefill.cpp'
-      - 'include/strata/prefill/qpn_experiment_policy.hpp'
-      - 'tests/qpn_prefill_policy_test.cpp'
-      - 'tools/qpn_full_model_ab.py'
-      - 'tools/qpn_prepack_expert_cache.py'
-      - 'tools/test_qpn_prepack_accelerated.py'
-      - '.github/workflows/qpn-full-model-packed.yml'
   workflow_dispatch:
 permissions:
   contents: read

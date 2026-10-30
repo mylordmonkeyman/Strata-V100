@@ -1,0 +1,11 @@
+{
+  "layout": "strata-qpn-nvfp4-chunkmajor-v1",
+  "version": 1,
+  "source_sha256": "1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5",
+  "cache_sha256": "24910343739a15562c50d087350d04d20dfca5624d6f70503d2f1edabc845eaf",
+  "experts": 24576,
+  "total_bytes": 67948118016,
+  "cache_preparation_s": 1520.76196561096,
+  "temporary": true,
+  "original_source_unchanged": true
+}

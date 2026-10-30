@@ -67,8 +67,11 @@ and staged results separate; they previously produced different first logits.
 
 ## Current status
 
-Implementation of the expanded fixture sweep is ready for V100 testing. Actual
-full-model prepacked prefill and decode integration/measurements remain pending.
+Expanded fixture sweeps and the actual nonresident-prepacked full-model prefill
+ABBA are complete. Both model row ranges failed to demonstrate a material gain;
+see [the final report](qpn-full-model-packed-negative-2026-10-30.md). Actual QPN
+autoregressive decode was not executed: all decode-shaped fixture variants lost
+to the production arithmetic comparator, leaving no winning selector to integrate.
 Original model packs, persistent expert caches, main, default MMQ dispatch, host
 services, driver and runner privileges remain unchanged.
 
@@ -157,7 +160,9 @@ not a QPN-decode performance result. Private raw logs/logits and the temporary c
 are removed. The earlier selective-supply diagnostic remains manually dispatchable;
 its automatic trigger is disabled to avoid unrelated GPU jobs on this new hook.
 
-**Pending gates:** V100 compilation and these full-model measurements; full-model
+**Completed:** V100 compilation and both full-model measurements; see
+[qpn-full-model-packed-negative-2026-10-30.md](qpn-full-model-packed-negative-2026-10-30.md).
+Neither row range established a material benefit. Remaining unqualified gates: full-model
 packed-path sanitizer/intermediate guards and changed-input model Graph remain
 unqualified. Model Graph capture is explicitly refused by the new hook. D4/MMQ input
 alignment is still not repaired; QPN uses the existing raw-FP16 experimental input
