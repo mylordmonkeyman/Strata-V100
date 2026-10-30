@@ -34,3 +34,16 @@ The existing `tools/qpn_supply_profile.py` / `src/prefill/qpn_supply_trace.hpp` 
 ## Decision / next evidence
 
 Preserve static-admission STOP and R1 UNKNOWN. A future bounded, native-MMQ-only full-critical-path measurement would need to distinguish actually *exposed* and *eligible* expert compute from overlapped CPU/H2D/cache work, attribute complete request and accepted decode separately, and pair with realistic format-transition and memory-state bounds. The small synthetic held-out pair does not qualify a representative distribution. Do not treat format-demand restore-byte counters as necessary or measured DMA. A packed resident-cache/Q4 conversion/GPU kernel prototype requires its own supported feasibility gate and may not be triggered by this document.
+## Evidence-test hardening
+
+The audit now requires the exact pinned source commits for both runs, checks
+each selection against its **replacement** payload budget using the verified
+2,764,816-byte native expert size, reconciles copied/skipped expert counts
+with transferred/skipped bytes and staging-job counts, and independently
+recomputes the published ABBA prefill medians. The associated unit tests
+**fail closed** if either committed aggregate file is absent; they no longer
+replace missing benchmark evidence with lookalike synthetic fixtures.
+In-memory mutated copies remain useful for negative tests only.
+These are integrity checks of the available aggregates, not independent
+authentication of the original private GPU measurements or representative
+heldout/performance qualification. The R1 decision remains UNKNOWN.
