@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).parent))
-from qpn_r1_dag_screen import MODEL_SHA, CONTROLS, EVIDENCE_FLAGS, screen
+from qpn_r1_dag_screen import MODEL_SHA, CONTROLS, EVIDENCE_FLAGS, screen, ensure_distinct_paths
 
 
 def fixture():
@@ -43,10 +44,15 @@ class R1DagScreenTests(unittest.TestCase):
     def test_missing_causal_evidence_fails_closed(self):
         x=fixture()
         x['evidence_flags']['all_cpu_gpu_work_and_wait_edges']=False
-        self.assertEqual(screen(x)['graph_screen'],'UNKNOWN_INCOMPLETE_CAUSAL_EVIDENCE')
+        r=screen(x)
+        self.assertEqual(r['graph_screen'],'UNKNOWN_INCOMPLETE_CAUSAL_EVIDENCE')
+        self.assertIsNone(r['conditional_max_latency_reduction_fraction'])
+        self.assertIsNone(r['conditional_assumed_factor_latency_reduction_fraction'])
         x=fixture()
         x['full_request_latency_ms']=40
-        self.assertEqual(screen(x)['graph_screen'],'UNKNOWN_INCOMPLETE_CAUSAL_EVIDENCE')
+        r=screen(x)
+        self.assertEqual(r['graph_screen'],'UNKNOWN_INCOMPLETE_CAUSAL_EVIDENCE')
+        self.assertIsNone(r['conditional_max_latency_reduction_fraction'])
 
     def test_cross_resource_dependency_reduces_overlap(self):
         x=fixture()
@@ -87,6 +93,42 @@ class R1DagScreenTests(unittest.TestCase):
         with self.assertRaises(ValueError):screen(x)
         x=fixture(); x['model_sha256']='0'*64
         with self.assertRaises(ValueError):screen(x)
+
+    def test_huge_sparse_lane_rank_fails_without_expensive_range(self):
+        x=fixture()
+        x['nodes'][2]['order']=10**1000
+        with self.assertRaises(ValueError): screen(x)
+
+    def test_finite_individual_durations_cannot_overflow_path(self):
+        x=fixture()
+        x['nodes'][1]['duration_ms']=1e308
+        x['nodes'][2]['duration_ms']=1e308
+        x['full_request_latency_ms']=1e308
+        with self.assertRaises(ValueError): screen(x)
+
+    def test_huge_integer_and_unhashable_node_fields_rejected(self):
+        x=fixture()
+        x['nodes'][1]['duration_ms']=10**1000
+        with self.assertRaises(ValueError): screen(x)
+        x=fixture()
+        x['nodes'][1]['phase']=['prefill']
+        with self.assertRaises(ValueError): screen(x)
+
+    def test_nonfinite_wall_reconciliation_rejected(self):
+        x=fixture()
+        x['full_request_latency_ms']=1e-308
+        with self.assertRaises(ValueError): screen(x)
+
+    def test_report_alias_cannot_overwrite_private_graph(self):
+        with tempfile.TemporaryDirectory() as d:
+            source=Path(d)/'private.json'
+            source.write_text('PRIVATE TEST SENTINEL')
+            alias=Path(d)/'same.json'
+            alias.symlink_to(source)
+            with self.assertRaises(ValueError): ensure_distinct_paths(source,source)
+            with self.assertRaises(ValueError): ensure_distinct_paths(source,alias)
+            self.assertEqual(source.read_text(),'PRIVATE TEST SENTINEL')
+            ensure_distinct_paths(source,Path(d)/'safe-report.json')
 
     def test_no_eligible_compute_produces_zero_ceiling(self):
         x=fixture(); x['nodes'][1]['eligible']=False

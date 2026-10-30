@@ -126,3 +126,18 @@ account for accepted-token generation separately, and emit **only aggregate
 bounds**. Any GPU runtime profiling proposal needs a new explicit bounded
 rationale and must preserve `gpu.lock`, shared concurrency, persistent CUDA
 12.8 build, model/cache/privacy and default-off production boundaries.
+## Host-only graph parser hardening (2026-10-30)
+
+The DAG parser now validates lane-order density in O(nodes), not by
+iterating up to an untrusted maximum order number. A malformed sparse
+rank fails closed without a potentially unbounded loop. Nonfinite
+accumulated critical-path durations and nonfinite wall reconciliation
+are rejected, as are unrepresentably large integers and malformed
+non-string node categories. The CLI also refuses to overwrite the
+private graph through an output alias or symlink.
+
+When required evidence assertions are incomplete or the modeled baseline
+does not reconcile with wall time, both **conditional latency reduction
+fractions** are now null. Diagnostic graph metadata remains explicitly
+nonqualifying; R1 is still UNKNOWN and static admission remains STOPPED.
+No GPU run or new profiler was authorized by this change.

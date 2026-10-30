@@ -29,9 +29,15 @@ MAX_EDGES = 2000000
 
 
 def finite_number(v, label, positive=False):
-    if type(v) not in (int, float) or not math.isfinite(v) or v < 0 or (positive and v == 0):
+    if type(v) not in (int, float):
         raise ValueError('invalid numeric ' + label)
-    return float(v)
+    try:
+        value = float(v)
+    except (OverflowError, ValueError):
+        raise ValueError('invalid numeric ' + label) from None
+    if not math.isfinite(value) or value < 0 or (positive and value == 0):
+        raise ValueError('invalid numeric ' + label)
+    return value
 
 
 def longest_path(nodes, edges, factor):
@@ -52,6 +58,8 @@ def longest_path(nodes, edges, factor):
     while ready:
         i = ready.popleft()
         completion[i] += durations[i]
+        if not math.isfinite(completion[i]):
+            raise ValueError('nonfinite critical-path accumulation')
         done += 1
         for j in successors[i]:
             completion[j] = max(completion[j], completion[i])
@@ -95,6 +103,7 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
     nodes = []
     lane_order = {}
     lane_next = {}
+    lane_counts = {}
     for i, n in enumerate(raw_nodes):
         if type(n) is not dict or set(n) != {'id', 'lane', 'order', 'phase', 'kind', 'duration_ms', 'eligible'}:
             raise ValueError('invalid private DAG node fields')
@@ -104,7 +113,9 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
             raise ValueError('invalid resource lane')
         if type(n['order']) is not int or n['order'] < 0:
             raise ValueError('invalid lane order')
-        if n['phase'] not in PHASES or n['kind'] not in KINDS or type(n['eligible']) is not bool:
+        if (type(n['phase']) is not str or type(n['kind']) is not str or
+                n['phase'] not in PHASES or n['kind'] not in KINDS or
+                type(n['eligible']) is not bool):
             raise ValueError('invalid phase/kind/eligibility')
         if n['eligible'] and (n['kind'] != 'expert_compute' or n['phase'] != 'prefill'):
             raise ValueError('only exact prefill expert work may be marked eligible')
@@ -114,9 +125,11 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
             raise ValueError('duplicate lane/order')
         lane_order[idx] = i
         lane_next[n['lane']] = max(n['order'], lane_next.get(n['lane'], -1))
+        lane_counts[n['lane']] = lane_counts.get(n['lane'], 0) + 1
         nodes.append({'duration_ms':duration, 'eligible':n['eligible']})
-    if any(any((lane, rank) not in lane_order for rank in range(highest+1))
-           for lane, highest in lane_next.items()):
+    # Unique nonnegative ranks with max == count-1 are exactly 0..count-1.
+    # This is O(nodes), unlike range(max_order) on untrusted private input.
+    if any(highest != lane_counts[lane] - 1 for lane, highest in lane_next.items()):
         raise ValueError('resource lane has missing sequence order')
     # Resource serialization is an explicit model requirement, not a guess from
     # event timestamps: for each lane its ordered operations cannot overlap.
@@ -138,8 +151,11 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
     scenario_cp = longest_path(nodes, edges, speed_factor)
     eligible_n = sum(x['eligible'] for x in nodes)
     base_gap = abs(base_cp-wall)/wall
+    if not math.isfinite(base_gap):
+        raise ValueError('nonfinite graph/request reconciliation')
     unverified = [k for k in EVIDENCE_FLAGS if flags[k] is not True]
     calibrated = base_gap <= max_unattributed_fraction
+    validated = not unverified and calibrated
     potential = max(0., base_cp-zero_cp)
     scenario = max(0., base_cp-scenario_cp)
     # No node ID, lane/order, inter-operation interval or route metadata output.
@@ -149,7 +165,7 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
         'r1_feasibility': 'UNKNOWN',
         'production_qualified': False,
         'eligible_work_exposed_time_measured': False,
-        'graph_sensitivity_validated': not unverified and calibrated,
+        'graph_sensitivity_validated': validated,
         'missing_evidence_assertions': unverified,
         'observed_graph_vs_request_gap_fraction': base_gap,
         'graph_vs_request_tolerance_fraction': max_unattributed_fraction,
@@ -161,10 +177,10 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
         'full_request_latency_ms': wall,
         'modeled_baseline_critical_path_ms': base_cp,
         'modeled_zero_eligible_critical_path_ms': zero_cp,
-        'conditional_max_latency_reduction_fraction': potential / wall,
+        'conditional_max_latency_reduction_fraction': potential / wall if validated else None,
         'assumed_fixture_only_speed_factor': speed_factor,
         'modeled_assumed_factor_critical_path_ms': scenario_cp,
-        'conditional_assumed_factor_latency_reduction_fraction': scenario / wall,
+        'conditional_assumed_factor_latency_reduction_fraction': scenario / wall if validated else None,
         'qualifies_actual_qpn_kernel_speed': False,
         'notes': [
             'DAG intervals must represent actual nonoverlapping work; waits are causal edges, not double-counted durations.',
@@ -172,6 +188,7 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
             'Current three-layer supply trace and route-share aggregates do not satisfy this contract.',
             'Zero-time conditional sensitivity is an idealized fixed-DAG ceiling, not a measured QPN speedup.',
             'No route, expert or node identity is included in the published report.',
+            'Incomplete evidence suppresses conditional latency reduction fractions.',
             'Do not interpret graph_screen as an R1 or R3 pass, or as evidence for a packed-cache prototype.'
         ]
     }
@@ -184,6 +201,12 @@ def screen(data, speed_factor=1.377, max_unattributed_fraction=.02):
     return output
 
 
+def ensure_distinct_paths(private_dag, aggregate_report):
+    # Prevent aliases from silently overwriting the private source graph.
+    if private_dag.resolve() == aggregate_report.resolve():
+        raise ValueError('private DAG and aggregate report must be distinct files')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--private-dag', type=Path, required=True,
@@ -193,6 +216,7 @@ def main():
     parser.add_argument('--assumed-speed-factor', type=float, default=1.377)
     args = parser.parse_args()
     try:
+        ensure_distinct_paths(args.private_dag, args.aggregate_report)
         data = json.loads(args.private_dag.read_text())
         result = screen(data, speed_factor=args.assumed_speed_factor)
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
