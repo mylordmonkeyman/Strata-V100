@@ -25,6 +25,33 @@ py="$QPN_STATE_DIR/full-model/venv/bin/python"
 "$py" tools/qpn_mixed_gpu_verify.py \
   --private-dir "$QPN_MIXED_FIXTURE_DIR" --published-summary "$QPN_MIXED_PINNED_SUMMARY" \
   --out qpn-prepacked-stream-results/provenance.json
+# Use a PRIVATE, ephemeral cache: only the verified source weight file is read.
+# Never upload cache.bin or its manifest and never mutate the model/fixture.
+private_cache="$(mktemp -d "${RUNNER_TEMP:-/tmp}/qpn-prepacked-XXXXXXXX")"
+chmod 700 "$private_cache"
+cleanup() { rm -f "$private_cache/cache.bin" "$private_cache/manifest.json"; rmdir "$private_cache" || true; }
+trap cleanup EXIT
+sha="$("$py" - <<'PY'
+import json
+print(json.load(open('qpn-prepacked-stream-results/provenance.json'))['weights_sha256'])
+PY
+)"
+"$py" tools/qpn_prepack_expert_cache.py \
+  --source "$QPN_MIXED_FIXTURE_DIR/weights.bin" \
+  --output "$private_cache/cache.bin" --manifest "$private_cache/manifest.json" \
+  --expected-sha256 "$sha" --experts 16 > /dev/null
+"$py" - "$private_cache/manifest.json" "$private_cache/cache.bin" "$sha" <<'PY'
+import hashlib,json,pathlib,sys
+manifest=json.load(open(sys.argv[1]))
+data=pathlib.Path(sys.argv[2])
+assert manifest['layout']=='strata-qpn-nvfp4-chunkmajor-v1'
+assert manifest['source_sha256']==sys.argv[3]
+assert manifest['experts']==16
+assert (manifest['rows_N'],manifest['hidden_FF'])==(2560,640)
+assert data.stat().st_size==manifest['total_bytes']==44237056
+assert hashlib.sha256(data.read_bytes()).hexdigest()==manifest['cache_sha256']
+print('Offline cache SHA and format verified; cache stays private')
+PY
 build="$QPN_STATE_DIR/builds/qpn-mixed-route"
 cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
@@ -33,7 +60,8 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 16
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
-      --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu --qpn-chunkmajor --qpn-pinned-stream)
+      --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu --qpn-chunkmajor --qpn-pinned-stream
+      --qpn-packed-file "$private_cache/cache.bin")
 # One CUDA event interval covers full 16-expert work, staging, gathers & launches.
 for min in 129; do
   numactl --cpunodebind=0 --membind=0 "$build/nvfp4_volta_mixed_bench" \
@@ -45,6 +73,8 @@ import json,math
 p='qpn-prepacked-stream-results/measurement-min129.json'
 j=json.load(open(p))
 assert j['pinned_stream'] and j['chunkmajor'] and j['fused_gu']
+assert j['disk_prepacked'] and j['repack_cpu_us']==0
+assert j['cache_load_us']>0
 assert (j['qpn_groups'],j['fallback_groups'],j['routed_rows'])==(2,14,1100)
 assert j['control_h2d_bytes']==j['hybrid_h2d_bytes']==j['weights_bytes']==44237056
 assert j['graph_checked'] and j['graph_changed_input_equal'] and j['graph_replay_equal']
