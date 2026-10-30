@@ -12,6 +12,21 @@ import statistics
 import subprocess
 import time
 
+# User's previously verified NaN benchmark recipe. Sanitization must preserve
+# these explicitly; all compared arms receive the same controlled settings.
+NAN_WORKAROUND = {
+    "STRATA_MMQ_KQ": "1",
+    "STRATA_PREFILL_MMQ": "1",
+    "STRATA_ARENA_LOCK": "0",
+    "STRATA_ARENA_PIN_GIB": "1",
+}
+
+def benchmark_env(environ=None):
+    source = os.environ if environ is None else environ
+    env = {k:v for k,v in source.items() if not k.startswith("STRATA_")}
+    env.update(NAN_WORKAROUND)
+    return env
+
 PREFILL = re.compile(r"prefill\s+(\d+)\s+tokens in\s+([\d.]+)\s+ms.*time to first token\s+([\d.]+)\s+ms")
 DECODE = re.compile(r"decode\s+(\d+)\s+tokens in\s+([\d.]+)\s+ms\s+->\s+([\d.]+)\s+tok/s")
 PLAN = re.compile(r"strata qpn-plan: layer\s+(\d+)\s+staged groups=(\d+)\s+experts=(\d+)\s+execute=(0|1)")
@@ -152,7 +167,7 @@ def main():
     tokenfile=a.state/"prompt-2048.txt"
     if not tokenfile.is_file() or not (a.prepared/"pack/experts.bin").is_file():
         raise ValueError("the pinned private prepared model / prompt is missing")
-    env={k:v for k,v in os.environ.items() if not k.startswith("STRATA_")}
+    env=benchmark_env()
     env.update({"STRATA_PREFILL_NVFP4":"w4a8",
                 "STRATA_QPN_PREFILL_PLAN_CONTROL":"1",  # both arms get identical host expert order
                 "STRATA_PREFILL_CPU_SHARE":"0",

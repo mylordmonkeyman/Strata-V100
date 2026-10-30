@@ -1,8 +1,18 @@
 import unittest
-from qpn_full_model_ab import ab_modes, classify_quality
+from qpn_full_model_ab import ab_modes, classify_quality, benchmark_env, NAN_WORKAROUND
 
 
 class PerformanceFirstABTest(unittest.TestCase):
+    def test_nan_workaround_survives_environment_sanitization(self):
+        original = {"PATH":"/example", "STRATA_MMQ_KQ":"0", "STRATA_UNRELATED":"1"}
+        result = benchmark_env(original)
+        self.assertEqual({k:result[k] for k in NAN_WORKAROUND}, {
+            "STRATA_MMQ_KQ":"1", "STRATA_PREFILL_MMQ":"1",
+            "STRATA_ARENA_LOCK":"0", "STRATA_ARENA_PIN_GIB":"1"})
+        self.assertEqual(result["PATH"],"/example")
+        self.assertNotIn("STRATA_UNRELATED",result)
+        self.assertEqual(original["STRATA_MMQ_KQ"],"0")
+
     def test_modes(self):
         self.assertEqual(ab_modes(True), ("qpn-base","qpn-fused","qpn-fused","qpn-base"))
         self.assertEqual(ab_modes(False), ("mmq","qpn-fused","qpn-fused","mmq"))

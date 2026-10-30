@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 import time
-from qpn_full_model_ab import sha, logits, diff, read_summary, safe_failure_diagnostics
+from qpn_full_model_ab import sha, logits, diff, read_summary, safe_failure_diagnostics, benchmark_env
 
 PREFIX = 'strata qpn-supply: '
 KINDS = ('h2d', 'slot_wait', 'ready_wait', 'gather', 'products')
@@ -112,10 +112,12 @@ def main():
         p.add_argument('--'+name, required=True, type=Path)
     p.add_argument('--repeatability', action='store_true',
                    help='diagnose 1024 off/off repeatability and inline-issuer off/on parity')
+    p.add_argument('--workaround-repeat', action='store_true',
+                   help='repeat uninstrumented stream-all with the restored known-good NaN recipe')
     p.add_argument('--layer-repeat', action='store_true',
                    help='repeat stream-all using existing private per-layer captures to locate divergence')
     a = p.parse_args()
-    if a.repeatability and a.layer_repeat:
+    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat)) > 1:
         raise ValueError('diagnostic modes are mutually exclusive')
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -124,7 +126,7 @@ def main():
     for f in (tokenfile, a.prepared/'pack/experts.bin', a.prepared/'dense.gguf', a.prepared/'ple-nvfp4.gguf'):
         if not f.is_file():
             raise ValueError('missing pinned private model or prompt')
-    base = {k:v for k,v in os.environ.items() if not k.startswith('STRATA_')}
+    base = benchmark_env()
     base.update(STRATA_PREFILL_NVFP4='w4a8', STRATA_PREFILL_CPU_SHARE='0',
                 STRATA_QPN_PREFILL_EXPERIMENTAL='0', STRATA_PREFILL_STREAM_MIN='1024')
     summary = dict(schema=1, scope='MMQ-only supply diagnosis, sampled layers 0/24/47; no QPN speed claim',
@@ -158,6 +160,11 @@ def main():
     if a.layer_repeat:
         experiments = [(1024, 'layer-repeat', '1', '1024', ((False, 'capture-a'), (False, 'capture-b')))]
         summary['scope'] = 'MMQ stream-all synchronized private layer repeatability diagnosis; no speed claim'
+    if a.workaround_repeat:
+        experiments = [(1024, 'restored-nan-recipe-repeat', '1', '1024', ((False, 'off-a'), (False, 'off-b')))]
+        summary['scope'] = 'MMQ stream-all repeatability with restored prior NaN workaround; no speed or quality claim'
+    summary['restored_nan_recipe'] = True
+    summary['workaround_repeat_diagnostic'] = a.workaround_repeat
     summary['repeatability_diagnostic'] = a.repeatability
     summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
@@ -235,12 +242,13 @@ def main():
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
-            if not (a.repeatability or a.layer_repeat):
+            if not (a.repeatability or a.layer_repeat or a.workaround_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = ('synchronized_layer_repeat_passed_uninstrumented_failure_unresolved' if a.layer_repeat
+    summary['status'] = ('restored_nan_recipe_repeat_passed_quality_unqualified' if a.workaround_repeat
+                         else 'synchronized_layer_repeat_passed_uninstrumented_failure_unresolved' if a.layer_repeat
                          else 'isolation_controls_passed_prior_threaded_failure_unresolved' if a.repeatability
                          else 'diagnostic_complete_quality_unqualified')
     save()

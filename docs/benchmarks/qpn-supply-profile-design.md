@@ -226,3 +226,36 @@ CUDA Graph capture; CUDA and file errors terminate the diagnostic. Runtime off
 allocates no snapshot buffers, writes no files and adds no synchronization.
 The selected readbacks synchronize their stream and can perturb scheduling; even
 complete snapshot parity would not repair or qualify the uninstrumented path.
+
+## Corrected benchmark environment: prior NaN workaround had been omitted
+
+The user identified a previously successful local benchmark recipe:
+
+```
+STRATA_MMQ_KQ=1
+STRATA_PREFILL_MMQ=1
+STRATA_ARENA_LOCK=0
+STRATA_ARENA_PIN_GIB=1
+```
+
+The QPN full-model A/B and supply-diagnostic harnesses sanitized inherited
+`STRATA_*` variables and failed to restore this recipe. Therefore all preceding
+results in this report used a different configuration from that known-good local
+setup. The historical first-logit hash differences remain observations of those
+specific builds/configurations; they do not establish that the issue persists
+with the user's working flags. Attribution to an upstream defect was premature.
+
+The shared `benchmark_env` helper now restores all four settings explicitly for
+both compared arms after sanitization. A regression test verifies that stale
+inherited settings cannot remove them, unrelated experimental settings remain
+excluded, and the caller's environment is not mutated. Every report records the
+actual restored values. No host/service configuration is changed.
+
+The first corrected control (`--workaround-repeat`) runs two uninstrumented
+1024 stream-all invocations, with QPN and all private capture hooks disabled.
+Strict first-logit repeatability and finite-output gates remain unchanged. Do not
+assume the recipe solves this NVFP4 failure before that run completes: in the
+pinned source, `STRATA_MMQ_KQ` enables K-quant MMQ types, whereas NVFP4 has its own
+W4A8 eligibility path (`moe_mmq.cu::supported`). The arena flags can also change
+host pinning/supply behavior. All four are retained to reproduce the agreed setup.
+Historical M0 artifacts are immutable and are not relabeled as using these flags.
