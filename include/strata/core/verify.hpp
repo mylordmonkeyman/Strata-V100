@@ -361,13 +361,12 @@ public:
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
-    // Experimental, PRIVATE, bounded verification-route snapshots. Never a production cache.
+    // Keep layout identical across engine and its callers even when the
+    // experimental capture implementation is NOT compiled (default).
     std::FILE* r1_verify_file_ = nullptr;
-    int32_t* r1_verify_host_ = nullptr;  // pinned [stage-layer][max_t][top_k]
+    int32_t* r1_verify_host_ = nullptr;  // opt-in pinned [layer][max_t][top_k]
     int r1_verify_windows_ = 0;
     bool r1_verify_record(int T, int64_t pos0, std::string& err);
-#endif
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
