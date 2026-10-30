@@ -1,10 +1,12 @@
-name: QPN pinned prepacked NVFP4 streaming versus MMQ on V100
+name: QPN prepacked prefill buckets and decode-shape sweep V100
 on:
   push:
     branches: ['qpn/prepacked-stream']
     paths:
       - 'src/kernels/nvfp4_volta_mixed_bench.cpp'
       - 'tools/qpn_prepacked_stream_gpu_ci.sh'
+      - 'tools/qpn_prepacked_sweep.py'
+      - 'tools/test_qpn_prepacked_sweep.py'
       - '.github/workflows/qpn-prepacked-stream-real.yml'
   workflow_dispatch:
 permissions:
@@ -14,11 +16,19 @@ concurrency:
   group: strata-qpn-v100
   cancel-in-progress: false
 jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: python3 -m unittest discover -s tools -p test_qpn_prepacked_sweep.py -v
   stream-real:
+    needs: [host]
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
     runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
     timeout-minutes: 120
     env:
+      QPN_SWEEP: '1'
       CMAKE_BUILD_PARALLEL_LEVEL: '16'
       QPN_STATE_DIR: /srv/strata-qpn
       QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
@@ -41,6 +51,7 @@ jobs:
         with:
           name: qpn-prepacked-stream-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            qpn-prepacked-stream-results/sweep.json
             qpn-prepacked-stream-results/provenance.json
             qpn-prepacked-stream-results/measurement-min129.json
             qpn-prepacked-stream-results/memcheck-measurement-min129.json

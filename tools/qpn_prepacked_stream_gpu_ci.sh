@@ -29,7 +29,7 @@ py="$QPN_STATE_DIR/full-model/venv/bin/python"
 # Never upload cache.bin or its manifest and never mutate the model/fixture.
 private_cache="$(mktemp -d "${RUNNER_TEMP:-/tmp}/qpn-prepacked-XXXXXXXX")"
 chmod 700 "$private_cache"
-cleanup() { rm -f "$private_cache/cache.bin" "$private_cache/manifest.json"; rmdir "$private_cache" || true; }
+cleanup() { rm -f "$private_cache/cache.bin" "$private_cache/manifest.json" "$private_cache/"*.log; rmdir "$private_cache" || true; }
 trap cleanup EXIT
 sha="$("$py" - <<'PY'
 import json
@@ -58,6 +58,12 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_VOLTA_QPN=ON
 cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 16
+if [[ "${QPN_SWEEP:-0}" == 1 ]]; then
+  "$py" tools/qpn_prepacked_sweep.py --binary "$build/nvfp4_volta_mixed_bench" \
+    --fixture "$QPN_MIXED_FIXTURE_DIR" --cache "$private_cache/cache.bin" \
+    --private "$private_cache" --report qpn-prepacked-stream-results
+  exit $?
+fi
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
       --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu --qpn-chunkmajor --qpn-pinned-stream
