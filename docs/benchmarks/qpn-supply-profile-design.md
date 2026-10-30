@@ -259,3 +259,37 @@ pinned source, `STRATA_MMQ_KQ` enables K-quant MMQ types, whereas NVFP4 has its 
 W4A8 eligibility path (`moe_mmq.cu::supported`). The arena flags can also change
 host pinning/supply behavior. All four are retained to reproduce the agreed setup.
 Historical M0 artifacts are immutable and are not relabeled as using these flags.
+
+
+## Restored benchmark recipe: stream-all still nonrepeatable
+
+Run **40999522670**, source `1300198d2b3a96a580b32a243bfa8ab67132d66f`,
+artifact **12952604371**, executed two fresh trace-off MMQ-only 1024
+stream-all processes with the previously omitted four-flag NaN recipe
+restored. Both exited zero and completed 2,047 prefill tokens, but
+first-logit relative L2 was **0.2645154883**, KL **0.1768648700**,
+same argmax. The recipe does **not** repair this experimental-binary
+stream-all nonrepeatability. Prefill timing differed (27,693.1 vs
+17,283.1 ms) and is not a valid performance A/B.
+
+The preceding synchronized boundary capture run **40998104339**,
+source `411e8d898fc6`, artifact **12952442605**, narrowed the earliest
+recorded second-chunk divergence to **layer 2 MoE output**, relative
+L2 **0.0246083454**, while the earlier layer-2 router input matched.
+Layer-2 exit residual L2 was **0.0051048843** and the first-logit
+L2 **0.2651216535**. This makes stream-all MoE weight supply,
+gather, and slot-lifetime behavior a stronger candidate than
+layer-3 attention, but does not establish a root cause or rule out
+timing perturbation from readbacks.
+
+Next isolated control: `--gather-repeat` disables the existing
+`STRATA_PREFILL_GROUP_GATHER` optimization only in the diagnostic
+process and compares two tracing-off fresh processes for each
+threaded and inline issuer. The original stream-all ring, compressed
+expert blobs, source, model, cache and MMQ arithmetic remain intact.
+This tests whether grouped-gather/event lifetime is necessary for the
+failure. If parity remains broken, investigate stream-all per-expert
+ready/reuse fences, especially the layer-2 second-chunk boundary.
+A passing synchronized or ungathered control is **not** numerical
+qualification of the default path or a performance result. Never
+enable QPN model-level optimization on these failed traces.
