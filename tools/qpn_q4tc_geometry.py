@@ -93,7 +93,7 @@ def geometry_screen():
             'extra_per_expert_bytes': padding,
             'extra_total_body_fraction': padding / body,
             'extra_down_body_fraction': padding / down,
-            'extra_selected_experts_mib': padding * SELECTED_EXPERTS_2GIB_SCREEN / MIB,
+            'extra_selected_experts_mib': padding * HISTORICAL_NVFP4_SELECTED / MIB,
             'notes': 'Padding changes the artifact and nominal arithmetic. Valid zero-valued padded blocks and scale-tail math require proof; no conversion performed.',
         },
         'single_representation_replacement_only': {
