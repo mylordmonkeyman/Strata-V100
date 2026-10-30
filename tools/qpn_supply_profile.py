@@ -110,6 +110,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
         p.add_argument('--'+name, required=True, type=Path)
+    p.add_argument('--repeatability', action='store_true',
+                   help='diagnose 1024 off/off repeatability and inline-issuer off/on parity')
     a = p.parse_args()
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -136,11 +138,18 @@ def main():
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False)+'\n')
     save()
-    for prefill in (768, 1024):
+    experiments = ([(1024, 'threaded-repeat', '1', ((False, 'off-a'), (False, 'off-b'))),
+                    (1024, 'inline-trace', '0', ((False, 'off'), (True, 'trace')))]
+                   if a.repeatability else
+                   [(n, 'standard', '1', ((False, 'off'), (True, 'trace'))) for n in (768, 1024)])
+    summary['repeatability_diagnostic'] = a.repeatability
+    parity_failed = False
+    for prefill, experiment, issuer, variants in experiments:
         pair = []
-        for trace in (False, True):
-            label = f'{prefill}-'+('trace' if trace else 'off')
+        for trace, variant in variants:
+            label = f'{prefill}-{experiment}-{variant}'
             env = base.copy()
+            env['STRATA_PREFILL_ISSUER'] = issuer
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             cmd = [str(a.binary), '--pack', str(a.prepared/'pack'), '--native', str(a.prepared/'dense.gguf'),
@@ -157,7 +166,8 @@ def main():
                                           stdout=f, stderr=subprocess.STDOUT, timeout=1100).returncode
                 except subprocess.TimeoutExpired:
                     code = 124
-            row = dict(prefill=prefill, trace=trace, returncode=code, wall_s=time.monotonic()-start)
+            row = dict(prefill=prefill, experiment=experiment, issuer=issuer, variant=variant,
+                       trace=trace, returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
             save()
@@ -170,7 +180,7 @@ def main():
             v = logits(out_logits)  # mandatory size and finite checks, private values
             pair.append(v)
             traces = parse_traces(raw)
-            if bool(traces) != trace or row['prefill_ms'] is None or row['prefill_tokens'] < 1024:
+            if bool(traces) != trace or row['prefill_ms'] is None or row['prefill_tokens'] < 1024 or row['qpn_groups'] != 0:
                 summary['status'] = 'failed_trace_or_missing_work'; save(); return 2
             if trace:
                 if not any(t['stream_all'] == (prefill == 1024) and
@@ -181,10 +191,15 @@ def main():
             print(f'MMQ supply diagnostic prefill={prefill} trace={trace} completed', flush=True)
             save()
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
-        metrics['prefill'] = prefill
+        metrics.update(prefill=prefill, experiment=experiment, issuer=issuer)
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
-            summary['status'] = 'failed_trace_changed_output'; save(); return 3
+            parity_failed = True
+            if not a.repeatability:
+                summary['status'] = 'failed_trace_changed_output'; save(); return 3
+        save()
+    if parity_failed:
+        summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
     summary['status'] = 'diagnostic_complete_quality_unqualified'
     save()
     return 0

@@ -74,3 +74,31 @@ Next: inspect supply gaps and residency before introducing any packed model
 staging. If matched realistic supply remains at parity, stop further QPN layout
 variants. D4 numerical reconstruction and the independently gated Q4TC track
 remain separate work; this diagnostic implements neither.
+
+## First real run: stream-all output parity failed (do not promote)
+
+Run **40992803235**, source `e50f9ec0a2457ee86fdfc4a5c61f59bea8cd0ef5`,
+aggregate artifact **12949774401**: all four model processes exited successfully
+and completed 2,047 prefill tokens; QPN executed zero groups throughout.
+The 768 trace-off/on first-logit comparison was **exact** (L2=0, KL=0).
+The 1024 comparison **failed**: relative L2 **0.2793418918**,
+KL **0.1090079737**, same argmax. Finite output and same argmax do not waive
+this failure. These data do not establish timing-transparent tracing or qualified
+stream-all numerics. No QPN throughput result was measured.
+
+Diagnostic context only: traced first 1024-token chunk transferred **760,324,400 /
+846,033,696 / 948,331,888 bytes** at sampled layers 0/24/47. Routed groups were
+204/336/219; resident routed groups 110/138/113. These are sampled instrumented
+values from the failed parity experiment, not a trustworthy performance comparison.
+The stream-all walk issued 275/306/343 nonresident expert copies, including experts
+not selected by that layer's routing; this is existing behavior, not introduced by
+tracing. The staged 768 walk supplied only its actual nonresident routed experts.
+
+Next diagnostic (workflow uses `--repeatability`): two uninstrumented threaded
+1024 runs, then inline-issuer trace-off/on at 1024. This distinguishes ordinary
+run-to-run variation from a threaded-issuer/timing interaction before attributing
+cause. The inline issuer is an existing experimental runtime control applied only
+to that diagnostic pair; default dispatch and synchronization are not patched.
+Both comparisons retain the strict L2 <= 1e-7 / same-argmax gate. A failure remains
+visible even if the other pair passes. No speed claim or dispatch integration until
+this is resolved. Do not infer a confirmed ring race from the first mismatch alone.
