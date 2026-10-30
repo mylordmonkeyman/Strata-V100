@@ -2,6 +2,7 @@
 // Standalone 16-expert, real nonuniform routed workload. Never linked into engine.
 #include "strata/kernels/nvfp4_volta_qpn.hpp"
 #include "strata/prefill/moe_mmq.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "ggml.h"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 namespace q=strata::kernels::qpn;
 namespace m=strata::prefill::mmq;
 namespace {
@@ -148,9 +150,10 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp,packed_path;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false, async_pipeline=false, explicit_range=false;int row_cap=0;
+    std::string wp,xp,cp,packed_path;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false, async_pipeline=false, explicit_range=false, native_decode_control=false;int row_cap=0;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
+        if(flag=="--native-decode-control"){native_decode_control=true;continue;}
         if(flag=="--graph-check"){check_graph=true;continue;}
         if(flag=="--qpn-fused-gu"){fused_gu=true;continue;}
         if(flag=="--qpn-chunkmajor"){chunkmajor=true;continue;}
@@ -175,7 +178,8 @@ int main(int argc,char** argv)try{
         else throw std::invalid_argument("unknown argument");
     }
     if(wp.empty()||xp.empty()||cp.empty()||iterations<1||iterations>1000||rounds<1||rounds>50||
-       row_cap<0 || row_cap>512 ||
+       row_cap<0 || row_cap>512 || (row_cap && !explicit_range) ||
+       (native_decode_control && (row_cap<1 || row_cap>16)) ||
        (explicit_range ? (qpn_min<1 || qpn_max<qpn_min || qpn_max>512) :
          ((qpn_min!=1&&qpn_min!=17&&qpn_min!=33&&qpn_min!=129) ||
           (qpn_max!=128&&qpn_max!=512) || (qpn_min==129&&qpn_max!=512) ||
@@ -389,10 +393,34 @@ int main(int argc,char** argv)try{
                                pinned_qpn->p,packed_h2d,
                                cudaMemcpyHostToDevice,s));
     };
+    // Actual production decode arithmetic control: linear Q8_1 activations
+    // and native grouped DP4A, distinct from the prefill MMQ comparator.
+    std::unique_ptr<Dev> decode_xq,decode_scratch,decode_ng;
+    std::vector<std::pair<const uint8_t*,std::unique_ptr<Dev>>> decode_ptrs;
+    const auto decode_layout=strata::kernels::native_expert_layout(GGML_TYPE_NVFP4,GGML_TYPE_NVFP4,N,F);
+    if(native_decode_control) {
+        decode_xq=std::make_unique<Dev>(size_t(rows)*N/32*36);
+        decode_scratch=std::make_unique<Dev>(strata::kernels::native_expert_scratch_bytes(rows,F));
+        decode_ng=std::make_unique<Dev>(4);const int groups=E;decode_ng->put(&groups,4);
+    }
+    auto decode_table=[&](const uint8_t* native)->const unsigned long long* {
+        for(const auto& item:decode_ptrs)if(item.first==native)return item.second->as<unsigned long long>();
+        cudaStreamCaptureStatus status{};ck(cudaStreamIsCapturing(s,&status));
+        if(status!=cudaStreamCaptureStatusNone)throw std::runtime_error("decode pointer table not prepared before capture");
+        std::array<unsigned long long,E> addresses{};
+        for(int i=0;i<E;i++)addresses[i]=reinterpret_cast<unsigned long long>(native+size_t(i)*STRIDE);
+        auto table=std::make_unique<Dev>(E*8);table->put(addresses.data(),E*8);
+        decode_ptrs.emplace_back(native,std::move(table));
+        return decode_ptrs.back().second->as<unsigned long long>();
+    };
     auto all_on=[&](const uint8_t* native){
         ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));
-        gather(E,native);
-        mmq(E,rows);
+        if(native_decode_control) {
+            const auto* table=decode_table(native);
+            strata::kernels::quantize_q8_1_rows(input.as<float>(),rows,N,decode_xq->p,s);
+            strata::kernels::native_expert_grouped(decode_layout,table,b.as<int32_t>(),decode_ng->as<int32_t>(),
+                ids.as<int32_t>(),ids.as<int32_t>(),E,rows,decode_xq->p,decode_scratch->p,y.as<float>(),s);
+        } else { gather(E,native); mmq(E,rows); }
     };
     auto mix_on=[&](const uint8_t* native,const uint8_t* qpn_packed){
         ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));
@@ -608,6 +636,7 @@ int main(int argc,char** argv)try{
     std::printf("{\"scope\":\"16 real experts; row-cap cases are decode-shape proxies, not model decode or TTFT\",");
     std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"pinned_stream\":%s,\"disk_prepacked\":%s,\"cache_load_us\":%.6f,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"control_h2d_bytes\":%zu,\"hybrid_h2d_bytes\":%zu,\"routed_rows\":%d,",
                 fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",pinned_stream?"true":"false",packed_path.empty()?"false":"true",cache_load_us,weight_pack_cpu_us,weight_pack_upload_us,pinned_stream?canonical_h2d:0,pinned_stream?fallback_h2d+packed_h2d:0,rows);
+    std::printf("\"baseline_backend\":\"%s\",",native_decode_control?"native-grouped-dp4a":"prefill-mmq");
     std::printf("\"row_cap\":%d,\"original_routed_rows\":%d,\"explicit_range\":%s,",row_cap,original_rows,explicit_range?"true":"false");
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");

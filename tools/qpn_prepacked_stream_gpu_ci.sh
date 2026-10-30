@@ -59,9 +59,11 @@ cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_VOLTA_QPN=ON
 cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 16
 if [[ "${QPN_SWEEP:-0}" == 1 ]]; then
+  sweep_extra=()
+  if [[ "${QPN_SWEEP_NATIVE_ONLY:-0}" == 1 ]]; then sweep_extra+=(--native-only); fi
   "$py" tools/qpn_prepacked_sweep.py --binary "$build/nvfp4_volta_mixed_bench" \
     --fixture "$QPN_MIXED_FIXTURE_DIR" --cache "$private_cache/cache.bin" \
-    --private "$private_cache" --report qpn-prepacked-stream-results
+    --private "$private_cache" --report qpn-prepacked-stream-results "${sweep_extra[@]}"
   exit $?
 fi
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"

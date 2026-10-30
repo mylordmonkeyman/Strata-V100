@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 120
     env:
       QPN_SWEEP: '1'
+      QPN_SWEEP_NATIVE_ONLY: '1'
       CMAKE_BUILD_PARALLEL_LEVEL: '16'
       QPN_STATE_DIR: /srv/strata-qpn
       QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1

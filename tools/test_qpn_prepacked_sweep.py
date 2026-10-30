@@ -10,7 +10,7 @@ class PrepackedSweepTest(unittest.TestCase):
     def test_natural_buckets_and_decode_have_matched_supply_controls(self):
         plan=cases(self.counts())
         self.assertEqual(len({c['name'] for c in plan}),len(plan))
-        decode=[c for c in plan if c['row_cap']==1]
+        decode=[c for c in plan if c['row_cap']==1 and c['baseline']=='prefill-mmq']
         self.assertEqual(len(decode),3)
         self.assertTrue(all(c['expected_groups']==16 and c['expected_rows']==16 for c in decode))
         for c in plan:
@@ -18,6 +18,7 @@ class PrepackedSweepTest(unittest.TestCase):
             cmd=command(Path('/binary'),Path('/private'),Path('/cache'),c)
             self.assertIn('--qpn-packed-file',cmd)
             self.assertIn('--qpn-chunkmajor',cmd)
+            self.assertEqual('--native-decode-control' in cmd,c['baseline']=='native-grouped-dp4a')
             self.assertEqual('--qpn-pinned-stream' in cmd,c['regime']!='resident')
             self.assertEqual('--qpn-async-pipeline' in cmd,c['regime']=='overlap-h2d')
 
@@ -27,7 +28,7 @@ class PrepackedSweepTest(unittest.TestCase):
 
     def test_gates_reject_missing_work_and_graph(self):
         c=cases(self.counts())[0]
-        j=dict(fused_gu=True,chunkmajor=True,disk_prepacked=True,explicit_range=True,numerics_pass=True,
+        j=dict(baseline_backend=c['baseline'],fused_gu=True,chunkmajor=True,disk_prepacked=True,explicit_range=True,numerics_pass=True,
                graph_checked=True,graph_replay_equal=True,graph_changed_input_equal=True,output_tail_guard_ok=True,
                qpn_groups=c['expected_groups'],fallback_groups=16-c['expected_groups'],routed_rows=c['expected_rows'],
                row_cap=c['row_cap'],qpn_min=c['low'],qpn_max=c['high'],iterations=10,rounds=6,

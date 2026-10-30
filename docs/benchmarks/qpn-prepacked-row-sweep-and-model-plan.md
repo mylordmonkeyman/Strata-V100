@@ -71,3 +71,28 @@ Implementation of the expanded fixture sweep is ready for V100 testing. Actual
 full-model prepacked prefill and decode integration/measurements remain pending.
 Original model packs, persistent expert caches, main, default MMQ dispatch, host
 services, driver and runner privileges remain unchanged.
+
+
+## Decode comparator extension
+
+Production `src/core/verify.cpp` invokes `native_expert_grouped` with a **linear
+36-byte Q8_1 image**, rather than prefill MMQ's transposed 144-byte D4 image.
+The sweep now has an additional `--native-decode-control` arm for capped rows:
+actual native grouped DP4A gate/up + SwiGLU + down, including its input quantization.
+Its existing canonical weights, per-expert scales, row bounds and output layout
+are compared to the same prepacked QPN path. `baseline_backend` identifies the
+comparator; legacy timing-key names containing `mmq` remain for compatibility
+and must not be interpreted as MMQ when that field says `native-grouped-dp4a`.
+
+Native pointer tables for each of the resident/two streaming weight slots are
+prepared during warmup, retained for graph lifetime, and cannot allocate during
+capture. The native control uses separate persistent linear-Q8_1/scratch buffers;
+its changing-input graph and oracle checks are identical to the MMQ control's.
+`--native-only` schedules only these 15 decode-shape/supply cases, with 1-row and
+8-row memcheck/racecheck checks. This avoids rerunning the first prefill/MMQ
+matrix when qualifying the additional production-decode arithmetic comparator.
+The original full sweep remains available by omitting this option.
+
+This remains fixture-level qualification, with capped **prefill-captured** inputs,
+not a fresh capture of actual autoregressive decode routing or full-model TPS.
+Real prepacked model prefill and decode still need the isolated hooks above.

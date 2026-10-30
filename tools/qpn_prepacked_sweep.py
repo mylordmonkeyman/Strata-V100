@@ -25,8 +25,12 @@ def cases(counts):
             result.append(dict(name=f'{"decode-cap"+str(cap) if cap else "prefill"}-{bounds[0]}-{bounds[1]}-{regime}',
                                row_cap=cap, low=bounds[0], high=bounds[1], regime=regime,
                                expected_groups=selected, expected_rows=sum(actual),
-                               scope='decode-shape proxy' if cap else 'original routed prefill fixture'))
-    return result
+                               baseline='prefill-mmq',scope='decode-shape proxy' if cap else 'original routed prefill fixture'))
+    native=[]
+    for c in result:
+        if c['row_cap']:
+            item=dict(c);item['name']+='-native';item['baseline']='native-grouped-dp4a';native.append(item)
+    return result+native
 
 
 def command(binary, fixture, cache, case, rounds=6, iterations=10):
@@ -34,6 +38,7 @@ def command(binary, fixture, cache, case, rounds=6, iterations=10):
             '--counts', str(fixture/'counts.txt'), '--qpn-packed-file', str(cache),
             '--qpn-fused-gu', '--qpn-chunkmajor', '--qpn-range', f'{case["low"]}:{case["high"]}',
             '--row-cap', str(case['row_cap']), '--rounds', str(rounds), '--iterations', str(iterations), '--graph-check']
+    if case.get('baseline')=='native-grouped-dp4a': args.append('--native-decode-control')
     if case['regime'] != 'resident':
         args.append('--qpn-pinned-stream')
     if case['regime'] == 'overlap-h2d':
@@ -55,6 +60,8 @@ def validate(j, case, iterations=10, rounds=6):
     for key in ('mixed_vs_mmq_output_l2','mmq_reference_l2','mixed_reference_l2'):
         if not math.isfinite(j[key]):
             raise ValueError('nonfinite numerical result')
+    if j.get('baseline_backend') != case['baseline']:
+        raise ValueError('wrong decode/prefill arithmetic comparator')
     streamed = case['regime'] != 'resident'
     if j['pinned_stream'] != streamed or j['async_pipeline'] != (case['regime'] == 'overlap-h2d'):
         raise ValueError('wrong supply regime')
@@ -76,9 +83,11 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('binary','fixture','cache','private','report'):
         p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--native-only',action='store_true')
     a=p.parse_args();a.report.mkdir(parents=True,exist_ok=True)
     counts=list(map(int,(a.fixture/'counts.txt').read_text().strip().split(',')))
     plan=cases(counts)
+    if a.native_only: plan=[c for c in plan if c['baseline']=='native-grouped-dp4a']
     report=dict(schema=1,scope='prepacked row-group sweep; decode cases are capped real-row proxies, not model decode',
                 full_model_prefill_tested=False,full_model_decode_tested=False,
                 binary_sha256=hashlib.sha256(a.binary.read_bytes()).hexdigest(),cases=[],sanitizers=[],status='pending')
@@ -102,9 +111,11 @@ def main():
     # Exercise small and large selected groups plus two-slot reuse. Three iterations
     # are mandatory; raw sanitizer output stays in the private temporary directory.
     picks=[]
-    for name in ('decode-cap1-1-1-overlap-h2d','prefill-17-32-overlap-h2d','prefill-129-256-overlap-h2d'):
+    names=(('decode-cap1-1-1-overlap-h2d-native','decode-cap8-1-8-overlap-h2d-native') if a.native_only else
+           ('decode-cap1-1-1-overlap-h2d','prefill-17-32-overlap-h2d','prefill-129-256-overlap-h2d'))
+    for name in names:
         picks += [c for c in plan if c['name']==name]
-    if len(picks)!=3:
+    if len(picks)!=len(names):
         report['status']='failed_sanitizer_case_coverage';save();return 2
     for case in picks:
         for tool in ('memcheck','racecheck'):
