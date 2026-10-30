@@ -277,10 +277,16 @@ source `411e8d898fc6`, artifact **12952442605**, narrowed the earliest
 recorded second-chunk divergence to **layer 2 MoE output**, relative
 L2 **0.0246083454**, while the earlier layer-2 router input matched.
 Layer-2 exit residual L2 was **0.0051048843** and the first-logit
-L2 **0.2651216535**. This makes stream-all MoE weight supply,
-gather, and slot-lifetime behavior a stronger candidate than
-layer-3 attention, but does not establish a root cause or rule out
-timing perturbation from readbacks.
+L2 **0.2651216535**. **Important chunk-boundary distinction:** with `STRATA_PREFILL_STREAM_MIN=1024`,
+the first chunk (T=1024) uses stream-all but the second (T=1023) uses
+the *staged* walk. Therefore the layer-2 MoE mismatch is observed in a
+staged second chunk **after** a stream-all first chunk. It may reflect
+state carried across chunks or a previous asynchronous operation,
+not necessarily an error in the second chunk's stream-all gather
+(which is not selected). This makes first-chunk stream-all supply,
+slot-lifetime, persistent state and cross-chunk handoff candidates;
+layer-3 attention is downstream, but no root cause is established.
+Readback synchronization may perturb scheduling.
 
 Next isolated control: `--gather-repeat` disables the existing
 `STRATA_PREFILL_GROUP_GATHER` optimization only in the diagnostic
