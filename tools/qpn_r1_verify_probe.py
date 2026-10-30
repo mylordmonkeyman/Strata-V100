@@ -17,7 +17,7 @@ import tempfile
 from qpn_full_model_ab import benchmark_env, sha, logits, diff, read_summary
 from qpn_r1_verify_convert import decode_private_verify
 
-MODEL = "1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3aa7d2f3bfe9d3e"
+MODEL = "1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5"
 PROMPT = "df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414"
 PREFILL_TOKENS = 2047
 
