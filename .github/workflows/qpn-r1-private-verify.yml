@@ -19,6 +19,16 @@ jobs:
         with: {persist-credentials: false}
       - run: python3 -m unittest discover -s tools -p test_qpn_r1_verify_convert.py -v
       - run: python3 -m unittest discover -s tools -p test_qpn_r1_verify_probe.py -v
+      - name: Confirm opt-in verification capture compiled into strata_engine
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          cmake=Path('cmake/volta_qpn.cmake').read_text()
+          verify=Path('src/core/verify.cpp').read_text()
+          assert 'target_compile_definitions(strata_engine PRIVATE STRATA_QPN_R1_VERIFY_EXPERIMENTAL=1)' in cmake
+          assert '#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)' in verify
+          assert 'r1_verify_record(T, pos0, err)' in verify
+          PY
   gpu:
     needs: [host]
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
