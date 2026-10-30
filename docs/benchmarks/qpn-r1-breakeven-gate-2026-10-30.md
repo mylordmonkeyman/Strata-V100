@@ -9,3 +9,58 @@ The result must remain **UNKNOWN** because independent training/heldout routing,
 For future private aggregate inputs, supply paired `mmq_prefill_s`, `mmq_decode_s`, `qpn_prefill_exposed_s`, `qpn_decode_s`, `regroup_s`, `transition_s`, `restore_s`, `dispatch_s` for the **same complete workload**, with nonoverlapping exposed critical-path components, plus incremental peak `packed_bytes` (including scratch) and a measured `safe_headroom_bytes`. Negative, nonfinite, and boolean numeric values are rejected. An over-budget configuration or measured timing deficit is **FAIL** even if other measurements are missing. **PASS** requires a >=5% full-workload gain, headroom upper-bound compliance, and explicitly verified independent-heldout, actual-decode, numerical-quality, critical-path-measurement, and allocator-fit qualifications; boolean assertions are not independently authenticated by the calculator.
 
 **Decision: no resident packed-slot GPU prototype, no repeated losing ABBA/1–16-row experiments, and no fabricated heldout or decode timings.** Production MMQ and caches remain untouched.
+
+## Corrected stage boundary: feasibility before qualification
+
+The original calculator remains available as the default `--stage qualification`
+check, now labeled **R3**. Its model-quality and measured candidate-memory gates
+must not be used as prerequisites for constructing an R2 prototype. New
+`--stage feasibility` implements R1 with measured baseline evidence and explicit
+optimistic/conservative net-savings bounds. It does not fabricate candidate times.
+
+Required aggregate fields: `baseline_request_s`, `optimistic_saved_s`,
+`conservative_saved_s`, `minimum_overhead_s`, `maximum_overhead_s`,
+`additional_peak_bytes`, `available_incremental_bytes`. Evidence flags are
+`baseline_measured`, `heldout_routes_measured`, `exposed_compute_measured`,
+`transition_cost_bounded`, `memory_budget_bounded`. All evidence flags are supplied
+assertions that must be backed by pinned reports; the calculator cannot verify them.
+
+- STOP: even optimistic net savings miss 5%, or incremental memory exceeds budget.
+- UNKNOWN: evidence is missing or unverified.
+- MEASURE_UNCERTAINTY: optimistic bounds pass but conservative bounds do not.
+- PROTOTYPE_CANDIDATE: conservative bounds pass; DDR-1 and implementation safety
+  obligations still apply. This is never production or numerical qualification.
+
+Both stages use **5% request latency reduction** (candidate <= 0.95 baseline),
+which corresponds to >=1.05263x throughput for fixed work. Include the same prompt,
+output work and cache state; no double counting of overlapped intervals. Additional
+memory is incremental peak including transient conversion and retirement, not the
+entire packed payload replacing existing canonical storage.
+
+## Bounded measurement contract for the next GPU work
+
+Before dispatch, prepare a private manifest with distinct training and held-out
+prompt hashes, exact token counts, model/binary/profile hashes and common flags.
+The existing pinned prompt alone cannot supply independent held-out evidence.
+Use a modest short/long prompt pair first and keep startup versus warmed-engine
+measurements separate. Changing seeds or copying the same trace is not held-out.
+
+Capture prefill and verification routing in the same private request lifetime;
+join on request/chunk/layer/window identities, validate complete work, and feed
+the host evaluator before temporary traces are deleted. Current separate probe
+scripts delete their captures at exit and cannot be joined retroactively. Preserve
+aggregate provenance only outside the runner. Collect actual group membership;
+allowing arbitrary regrouping gives an upper bound, not executable group coverage.
+
+Record native verification work even for rejected speculative tokens: its weights
+were consumed and matter for restoration. Accepted-token counts are separately
+required for useful decode TPS and phase interpretation, not for deciding whether
+an executed verification window consumed canonical weights. First-logit parity
+alone does not validate the later generation sequence.
+
+Time eligible resident work, gathers, exposed CPU staging and copy/slot waits with
+trace-off controls. Use temporary isolated buffers to bound canonical reload or
+lossless inverse-layout conversion; include completion fences, scratch and all
+canonical fallbacks. Do not mutate the persistent cache for this measurement.
+Report the removable exposed time and full overhead range for the same request.
+No new packed model cache or full-cache rebuild is justified by the current data.

@@ -1,6 +1,6 @@
 """Synthetic host-only tests for the R1 break-even calculator."""
 import unittest
-from qpn_r1_breakeven import assess
+from qpn_r1_breakeven import assess, assess_feasibility
 
 class BreakEvenTests(unittest.TestCase):
     def base(self):
@@ -66,6 +66,48 @@ class BreakEvenTests(unittest.TestCase):
         del x["restore_s"]
         self.assertEqual(assess(x)["decision"], "UNKNOWN")
         self.assertIn("restore_s",assess(x)["missing_measurements"])
+
+
+class FeasibilityTests(unittest.TestCase):
+    def data(self):
+        return dict(baseline_request_s=100, optimistic_saved_s=15,
+                    conservative_saved_s=10, minimum_overhead_s=2,
+                    maximum_overhead_s=4, additional_peak_bytes=100,
+                    available_incremental_bytes=200, baseline_measured=True,
+                    heldout_routes_measured=True, exposed_compute_measured=True,
+                    transition_cost_bounded=True, memory_budget_bounded=True)
+
+    def test_candidate_does_not_require_unbuilt_candidate_quality(self):
+        r=assess_feasibility(self.data())
+        self.assertEqual(r['decision'], 'PROTOTYPE_CANDIDATE')
+        self.assertFalse(r['production_qualified'])
+
+    def test_optimistic_failure_can_stop_before_full_evidence(self):
+        r=assess_feasibility(dict(baseline_request_s=100, optimistic_saved_s=4,
+                                  minimum_overhead_s=0))
+        self.assertEqual(r['decision'], 'STOP')
+
+    def test_uncertain_bounds_need_measurement(self):
+        x=self.data(); x['maximum_overhead_s']=9
+        self.assertEqual(assess_feasibility(x)['decision'], 'MEASURE_UNCERTAINTY')
+
+    def test_unverified_heldout_cannot_authorize(self):
+        x=self.data(); x['heldout_routes_measured']=False
+        self.assertEqual(assess_feasibility(x)['decision'], 'UNKNOWN')
+
+    def test_memory_failure_stops(self):
+        self.assertEqual(assess_feasibility(dict(additional_peak_bytes=201,
+                         available_incremental_bytes=200))['decision'], 'STOP')
+
+    def test_invalid_bounds_rejected(self):
+        for change in ({'conservative_saved_s':16}, {'minimum_overhead_s':5},
+                       {'optimistic_saved_s':101}, {'baseline_request_s':0},
+                       {'additional_peak_bytes':True}, {'maximum_overhead_s':float('nan')}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                assess_feasibility(dict(self.data(), **change))
+
+    def test_headroom_alone_unknown(self):
+        self.assertEqual(assess_feasibility(dict(available_incremental_bytes=737*1048576))['decision'], 'UNKNOWN')
 
 if __name__ == "__main__":
     unittest.main()
