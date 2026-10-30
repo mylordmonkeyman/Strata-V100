@@ -1,0 +1,71 @@
+name: QPN MMQ transition fallback ABBA V100
+on:
+  push:
+    branches: ['qpn/prepacked-stream']
+    paths:
+      - 'tools/qpn_transition_abba.py'
+      - 'tools/test_qpn_transition_abba.py'
+      - '.github/workflows/qpn-transition-abba.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: python3 -m unittest discover -s tools -p test_qpn_transition_abba.py -v
+      - run: python3 -m unittest discover -s tools -p test_qpn_supply_profile.py -v
+  mmq-abba:
+    needs: [host]
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 100
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+      CUDA_MODULE_LOADING: EAGER
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Run pinned MMQ transition ABBA (private logits, aggregate output only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p qpn-transition-abba-results
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader \
+            > qpn-transition-abba-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-transition-abba-results/processes-before.txt; then
+            echo 'GPU already has compute clients; refusing ABBA' >&2; exit 2
+          fi
+          model_state="$QPN_STATE_DIR/full-model"
+          build="$QPN_STATE_DIR/builds/qpn-full-model-opt-in"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
+          cmake --build "$build" --target strata --parallel 16
+          "$model_state/venv/bin/python" tools/qpn_transition_abba.py \
+            --source "$PWD" --binary "$build/strata" --prepared "$model_state/prepared" \
+            --state "$model_state" --report qpn-transition-abba-results
+          "$model_state/venv/bin/python" -m json.tool qpn-transition-abba-results/summary.json >/dev/null
+      - name: Upload typed aggregate provenance and parity only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-transition-abba-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-transition-abba-results/summary.json
+            qpn-transition-abba-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14
