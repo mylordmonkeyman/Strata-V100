@@ -4914,13 +4914,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
                             return v == nullptr || std::atoi(v) != 0;
                         }();
-                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
+                        // Strictly opt-in diagnostics to separate the stream-all first chunk
+                        // from the staged continuation. Both are false by default.
+                        static const bool gg_diag_disable_stream = [] {
+                            const char* v = std::getenv("STRATA_QPN_DIAG_GG_DISABLE_STREAM");
+                            return v && std::atoi(v) != 0;
+                        }();
+                        static const bool gg_diag_disable_staged = [] {
+                            const char* v = std::getenv("STRATA_QPN_DIAG_GG_DISABLE_STAGED");
+                            return v && std::atoi(v) != 0;
+                        }();
+                        const bool group_gather = group_env && !gg_diag_disable_stream &&
+                                                  stream_all && use_mmq && lay.native &&
                                                   MMQ_GROUP <= mmq::kGatherGroupMax;
                         // The staged walk (a short prompt) groups too, resident and staged experts alike: its ring is
                         // then STAGE_GRP slots, two groups, and it stages no further ahead than the open group allows,
                         // so a group's staged slots stay unread-over until its flush (one wait on the last copy, one
                         // event releasing them all, as in the streamed walk).
-                        const bool group_resident = group_env && !stream_all && use_mmq && lay.native &&
+                        const bool group_resident = group_env && !gg_diag_disable_staged &&
+                                                    !stream_all && use_mmq && lay.native &&
                                                     MMQ_GROUP <= mmq::kGatherGroupMax;
                         const bool gg_now = group_gather || group_resident;
                         const int stage_n = group_resident ? STAGE_GRP : STAGE;
