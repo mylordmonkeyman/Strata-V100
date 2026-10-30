@@ -61,7 +61,7 @@ cmake --build "$build" --target nvfp4_volta_mixed_bench --parallel 16
 args=(--weights "$QPN_MIXED_FIXTURE_DIR/weights.bin"
       --activations "$QPN_MIXED_FIXTURE_DIR/activations.f32"
       --counts "$QPN_MIXED_FIXTURE_DIR/counts.txt" --qpn-max 512 --qpn-fused-gu --qpn-chunkmajor --qpn-pinned-stream
-      --qpn-packed-file "$private_cache/cache.bin")
+      --qpn-packed-file "$private_cache/cache.bin" --qpn-async-pipeline)
 # One CUDA event interval covers full 16-expert work, staging, gathers & launches.
 for min in 129; do
   numactl --cpunodebind=0 --membind=0 "$build/nvfp4_volta_mixed_bench" \
@@ -75,6 +75,10 @@ j=json.load(open(p))
 assert j['pinned_stream'] and j['chunkmajor'] and j['fused_gu']
 assert j['disk_prepacked'] and j['repack_cpu_us']==0
 assert j['cache_load_us']>0
+assert j['async_pipeline'] and j['pipeline_output_equal']
+assert len(j['pipeline_all_mmq_us'])==len(j['pipeline_mixed_us'])==6
+assert math.isfinite(j['pipeline_speedup']) and j['pipeline_speedup']>0
+assert j['pipeline_all_mmq_median_us']>0 and j['pipeline_mixed_median_us']>0
 assert (j['qpn_groups'],j['fallback_groups'],j['routed_rows'])==(2,14,1100)
 assert j['control_h2d_bytes']==j['hybrid_h2d_bytes']==j['weights_bytes']==44237056
 assert j['graph_checked'] and j['graph_changed_input_equal'] and j['graph_replay_equal']
@@ -108,4 +112,4 @@ for min in 129; do
   grep -Eq 'RACECHECK SUMMARY: 0 hazards displayed \(0 errors, 0 warnings\)' "qpn-prepacked-stream-results/racecheck-min${min}.log"
   "$py" -m json.tool "qpn-prepacked-stream-results/racecheck-measurement-min${min}.json" >/dev/null
 done
-echo 'Real-capture equal-byte persistent pinned host packed/QPN vs MMQ streaming, parity, graph and sanitizers passed.'
+echo 'Real-capture equal-byte 2-stream HtoD pipeline and original Graph/FP64/memcheck/racecheck gates passed.'
