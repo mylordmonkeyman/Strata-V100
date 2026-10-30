@@ -96,10 +96,11 @@ for min in 129; do
     --tool memcheck --error-exitcode 98 --leak-check no \
     --log-file "qpn-prepacked-stream-results/memcheck-min${min}.log" \
     "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
-    --qpn-min "$min" --rounds 1 --iterations 1 --graph-check \
+    --qpn-min "$min" --rounds 1 --iterations 3 --graph-check \
     > "qpn-prepacked-stream-results/memcheck-measurement-min${min}.json"
   grep -q 'ERROR SUMMARY: 0 errors' "qpn-prepacked-stream-results/memcheck-min${min}.log"
   "$py" -m json.tool "qpn-prepacked-stream-results/memcheck-measurement-min${min}.json" >/dev/null
+  "$py" -c 'import json,sys; j=json.load(open(sys.argv[1])); assert j["async_pipeline"] and j["pipeline_output_equal"] and j["iterations"]>=3, "two-slot reuse not covered by memcheck"' "qpn-prepacked-stream-results/memcheck-measurement-min${min}.json"
 done
 # Racecheck is separate from memcheck; fail closed on shared-memory hazards.
 for min in 129; do
@@ -107,9 +108,10 @@ for min in 129; do
     --tool racecheck --error-exitcode 98 \
     --log-file "qpn-prepacked-stream-results/racecheck-min${min}.log" \
     "$build/nvfp4_volta_mixed_bench" "${args[@]}" \
-    --qpn-min "$min" --rounds 1 --iterations 1 --graph-check \
+    --qpn-min "$min" --rounds 1 --iterations 3 --graph-check \
     > "qpn-prepacked-stream-results/racecheck-measurement-min${min}.json"
   grep -Eq 'RACECHECK SUMMARY: 0 hazards displayed \(0 errors, 0 warnings\)' "qpn-prepacked-stream-results/racecheck-min${min}.log"
   "$py" -m json.tool "qpn-prepacked-stream-results/racecheck-measurement-min${min}.json" >/dev/null
+  "$py" -c 'import json,sys; j=json.load(open(sys.argv[1])); assert j["async_pipeline"] and j["pipeline_output_equal"] and j["iterations"]>=3, "two-slot reuse not covered by racecheck"' "qpn-prepacked-stream-results/racecheck-measurement-min${min}.json"
 done
 echo 'Real-capture equal-byte 2-stream HtoD pipeline and original Graph/FP64/memcheck/racecheck gates passed.'
