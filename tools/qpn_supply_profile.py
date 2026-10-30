@@ -172,10 +172,10 @@ def main():
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             if a.layer_repeat:
-                feature_path, residual_path = private/(label+'.features'), private/(label+'.residuals')
+                feature_path, residual_path, boundary_path = (private/(label+suffix) for suffix in ('.features','.residuals','.boundary'))
                 env.update(STRATA_DBG_FEAT=str(feature_path), STRATA_DBG_FEAT_LAYERS=','.join(map(str,range(48))),
-                           STRATA_PREFILL_DUMP_R_ALL=str(residual_path))
-                capture_paths.append((feature_path,residual_path))
+                           STRATA_PREFILL_DUMP_R_ALL=str(residual_path), STRATA_QPN_BOUNDARY_DUMP=str(boundary_path))
+                capture_paths.append((feature_path,residual_path,boundary_path))
             cmd = [str(a.binary), '--pack', str(a.prepared/'pack'), '--native', str(a.prepared/'dense.gguf'),
                    '--native-dense-gguf', str(a.prepared/'dense.gguf'), '--ple-gguf', str(a.prepared/'ple-nvfp4.gguf'),
                    '--tokens-file', str(tokenfile), '--max-context', '4096', '--max-new', '16', '--greedy',
@@ -217,10 +217,11 @@ def main():
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
         metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min)
         if a.layer_repeat:
-            from qpn_layer_compare import compare_features, compare_residuals
+            from qpn_layer_compare import compare_features, compare_residuals, compare_boundaries
             try:
                 metrics['prefill_features'] = compare_features(capture_paths[0][0], capture_paths[1][0])
                 metrics['chunk_residuals'] = compare_residuals(capture_paths[0][1], capture_paths[1][1])
+                metrics['boundaries'] = compare_boundaries(capture_paths[0][2], capture_paths[1][2])
             except (ValueError, OSError) as error:
                 summary['status'] = 'failed_private_capture_validation'
                 summary['capture_error_type'] = type(error).__name__
@@ -229,7 +230,8 @@ def main():
                 r['hidden']['bitwise_equal'] and r['route_ids_equal'] and r['route_weights']['bitwise_equal']
                 for r in metrics['prefill_features']['records'])
             metrics['chunk_residuals_equal'] = all(r['bitwise_equal'] for r in metrics['chunk_residuals'])
-            parity_failed |= not (metrics['layer_capture_equal'] and metrics['chunk_residuals_equal'])
+            metrics['boundaries_equal'] = all(r['bitwise_equal'] for r in metrics['boundaries']['records'])
+            parity_failed |= not (metrics['layer_capture_equal'] and metrics['chunk_residuals_equal'] and metrics['boundaries_equal'])
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True

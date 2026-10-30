@@ -192,3 +192,37 @@ rather than 1024-token geometry or the threaded issuer alone. It does not locate
 the defective operation. The next layer-repeat diagnostic targets stream-all;
 forced-staged controls and the earlier 768 result are preserved in the harness.
 No performance comparison is qualified while stream-all outputs are unstable.
+
+## Layer comparison: first difference in the second chunk at layer 3
+
+Run **40996673563**, source `f62fda17b31d6cc84ae028983788f2ed10303e3a`,
+artifact **12951971448**, completed both synchronized private-capture runs and
+failed repeatability. All **48 first-chunk router inputs, routed IDs and rounded
+routing weights matched bitwise**; the first 1024-token chunk's BF16 final residual
+snapshot also matched. The second chunk's layers 0/1/2 matched; its first hidden
+and routed-ID differences were **layer 3** (hidden L2 **0.0070176157**, 12 routed-ID
+entries different). The second chunk's residual L2 was **0.3322306134**. First-logit
+L2 **0.2457868780**, KL **0.1368310186**, same argmax; still a hard failure.
+
+These captures narrow the earliest visible divergence to work between the layer-2
+MoE input and layer-3 MoE input of the 1023-token tail, or state carried from the
+first chunk. They do **not** prove that layer-3 attention is the cause: layer-2 MoE,
+HC write/normalization, and unobserved persistent state remain candidates. The
+matching first-chunk residual is a BF16 snapshot, not proof that every FP32
+residual or persistent KV/GDN state byte matched.
+
+### Narrow boundary snapshots (default off)
+
+The follow-up adds `STRATA_QPN_BOUNDARY_DUMP`, under the existing experimental
+prefill build gate, to read back only the relevant layer-2/layer-3 boundaries.
+It records FP32 layer-2 MoE output and HC injection, its exit residual, layer-3
+entry residual/norm scales, its **FP16** norm image, FP32 attention input/output
+and injection, and its post-attention residual. Both chunks are covered. Raw
+snapshots stay private; only hashes and mathematical comparisons are exported.
+
+This is an observational hook, with no new arithmetic kernels, dispatch, source,
+cache or ring changes. It rejects unsupported norm/encoding preconditions and
+CUDA Graph capture; CUDA and file errors terminate the diagnostic. Runtime off
+allocates no snapshot buffers, writes no files and adds no synchronization.
+The selected readbacks synchronize their stream and can perturb scheduling; even
+complete snapshot parity would not repair or qualify the uninstrumented path.

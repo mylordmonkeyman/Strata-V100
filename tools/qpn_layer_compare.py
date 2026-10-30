@@ -96,3 +96,58 @@ def compare_residuals(a_path, b_path):
         if a.read(1) or b.read(1):
             raise ValueError('unexpected private residual dump tail')
     return result
+
+
+# phase -> (layer, columns, encoding, aggregate label)
+BOUNDARIES = {
+    6:(2,N,1,'layer2_moe_output'), 7:(2,4,1,'layer2_hc_injection'), 8:(2,4*N,1,'layer2_exit_residual'),
+    0:(3,4*N,1,'layer3_entry_residual'), 1:(3,4,1,'layer3_entry_norm_scales'),
+    2:(3,4*N,2,'layer3_entry_norm_image'), 3:(3,N,1,'layer3_attention_input'),
+    4:(3,N,1,'layer3_attention_output'), 9:(3,4,1,'layer3_hc_injection'), 5:(3,4*N,1,'layer3_post_attention_residual')}
+
+
+def boundary_records(path):
+    seen = set()
+    with open(path, 'rb') as f:
+        while True:
+            header = f.read(64)
+            if not header:
+                return
+            if len(header) != 64:
+                raise ValueError('truncated private boundary header')
+            version,pos,l,phase,t,cols,encoding,count=struct.unpack('<8q',header)
+            if (version != 1 or pos not in (0,1024) or not 1 <= t <= 1024 or
+                    phase not in BOUNDARIES or (l,cols,encoding) != BOUNDARIES[phase][:3] or count != t*cols):
+                raise ValueError('invalid private boundary geometry')
+            key=(pos,l,phase)
+            if key in seen:
+                raise ValueError('duplicate private boundary record')
+            seen.add(key)
+            yield key,t,encoding,read_exact(f,count*(4 if encoding==1 else 2))
+
+
+def compare_boundaries(a_path,b_path):
+    a,b=iter(boundary_records(a_path)),iter(boundary_records(b_path))
+    rows=[]
+    while True:
+        ar,br=next(a,None),next(b,None)
+        if ar is None or br is None:
+            if ar is not None or br is not None:
+                raise ValueError('missing private boundary record')
+            break
+        key,t,encoding,ax=ar
+        kb,u,eb,bx=br
+        if key != kb or t != u or encoding != eb:
+            raise ValueError('private boundary order or shape changed')
+        dtype='<f4' if encoding==1 else '<f2'
+        rows.append(dict(chunk=key[0],layer=key[1],phase=key[2],label=BOUNDARIES[key[2]][3],tokens=t,
+                         sha256_a=hashlib.sha256(ax).hexdigest(),sha256_b=hashlib.sha256(bx).hexdigest(),
+                         **stats(np.frombuffer(ax,dtype),np.frombuffer(bx,dtype))))
+    expected={(pos,meta[0],phase) for pos in (0,1024) for phase,meta in BOUNDARIES.items()}
+    if ({(r['chunk'],r['layer'],r['phase']) for r in rows} != expected or
+            any(r['tokens'] != (1024 if r['chunk']==0 else 1023) for r in rows)):
+        raise ValueError('incomplete private boundary coverage')
+    first=next((dict(chunk=r['chunk'],layer=r['layer'],phase=r['phase'],label=r['label'])
+                for r in rows if not r['bitwise_equal']),None)
+    return dict(scope='synchronized selected layer2/layer3 snapshots; not performance qualification',
+                records=rows,first_difference=first)

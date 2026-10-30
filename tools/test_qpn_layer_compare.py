@@ -3,7 +3,7 @@ from pathlib import Path
 import struct
 import unittest
 import numpy as np
-from qpn_layer_compare import records, stats, N, K
+from qpn_layer_compare import records, boundary_records, stats, N, K
 
 class LayerCompareTest(unittest.TestCase):
     def test_stats_reject_nonfinite_and_detect_change(self):
@@ -24,6 +24,22 @@ class LayerCompareTest(unittest.TestCase):
             with self.assertRaises(ValueError):list(records(p))
             p.write_bytes(record+record)
             with self.assertRaises(ValueError):list(records(p))
+    def test_boundary_geometry_and_truncation(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'boundary.bin'
+            record=struct.pack('<8q',1,0,2,6,1,N,1,N)+b'\0'*(N*4)
+            p.write_bytes(record)
+            self.assertEqual(list(boundary_records(p))[0][:3],((0,2,6),1,1))
+            p.write_bytes(record[:-1])
+            with self.assertRaises(ValueError):list(boundary_records(p))
+            p.write_bytes(record+record)
+            with self.assertRaises(ValueError):list(boundary_records(p))
+    def test_boundary_schema_rejected_before_allocation(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'boundary.bin'
+            for header in ((2,0,2,6,1,N,1,N),(1,0,3,6,1,N,1,N),(1,0,2,6,1,N,1,2**50)):
+                p.write_bytes(struct.pack('<8q',*header))
+                with self.assertRaises(ValueError):list(boundary_records(p))
     def test_geometry_rejected_before_payload_allocation(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'features.bin';p.write_bytes(struct.pack('<4i',0,0,2**30,1))

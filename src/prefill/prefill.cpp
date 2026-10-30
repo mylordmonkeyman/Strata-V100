@@ -52,6 +52,7 @@
 
 #include <cuda_runtime.h>
 #include "qpn_supply_trace.hpp"
+#include "qpn_boundary_capture.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -2877,6 +2878,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
+    QpnBoundaryCapture boundary(!m.pp && next_ == nullptr);
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
@@ -3463,6 +3465,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 stats_.ms_ple += ms_since(tp);
             }
             for (int half = 0; half < 2; ++half) {
+                if (boundary.enabled() && l == 3 && half == 0) {
+                    // The previous fused HC write produced these live images.
+                    if (!normed || gr_unfused() || hc_pad() || !fp16_bits() ||
+                        !boundary.record(m.R, p0, l, 0, T, D, 1, m.cs) ||
+                        !boundary.record(m.grs, p0, l, 1, T, HC, 1, m.cs) ||
+                        !boundary.record(m.xn16, p0, l, 2, T, D, 2, m.cs)) {
+                        err = "experimental boundary capture: unsupported HC images or snapshot failure";
+                        return false;
+                    }
+                }
                 // ---- the hyper-connection read of this half
                 const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
                 const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
@@ -3544,6 +3556,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                     core::NativeDense::hc_bf16_release(m.cs, 0, 0);
                     core::NativeDense::hc_bf16_release(m.cs, 1, 0);
+                }
+                if (boundary.enabled() && l == 3 && half == 0 &&
+                    !boundary.record(m.mixed, p0, l, 3, T, N, 1, m.cs)) {
+                    err = "experimental boundary capture: attention input snapshot failure";
+                    return false;
                 }
                 if (half == 0 && !core::is_qsa_layer(g, l)) {
                     // ======================= GDN =======================
@@ -5599,6 +5616,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                     }
                 }
+                if (boundary.enabled() && ((l == 2 && half == 1) || (l == 3 && half == 0))) {
+                    if (!boundary.record(m.bo, p0, l, l == 2 ? 6 : 4, T, N, 1, m.cs) ||
+                        !boundary.record(m.inj, p0, l, l == 2 ? 7 : 9, T, HC, 1, m.cs)) {
+                        err = "experimental boundary capture: sublayer output snapshot failure";
+                        return false;
+                    }
+                }
                 pt.mark(kPfHcWrite, cs);   // the write-back (and the next half's norm) on its own line; it used to be charged to the phase before
                 // ---- the hyper-connection write of this half; F-2: fused with the next half's norm when nothing else
                 // touches R in between (not the stage's last half, not before the PLE block of layer 1, not under a
@@ -5663,6 +5687,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (boundary.enabled() && ((l == 2 && half == 1) || (l == 3 && half == 0)) &&
+                    !boundary.record(m.R, p0, l, l == 2 ? 8 : 5, T, D, 1, m.cs)) {
+                    err = "experimental boundary capture: residual snapshot failure";
+                    return false;
+                }
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
