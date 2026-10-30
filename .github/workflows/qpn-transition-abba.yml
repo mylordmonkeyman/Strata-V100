@@ -1,4 +1,4 @@
-name: QPN MMQ transition fallback ABBA V100
+name: QPN repeatable MMQ supply profile V100
 on:
   push:
     branches: ['qpn/prepacked-stream']
@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Run pinned MMQ transition ABBA (private logits, aggregate output only)
+      - name: Profile repeatable MMQ supply (private logits, aggregate events only)
         shell: bash
         run: |
           set -euo pipefail
@@ -55,7 +55,7 @@ jobs:
             -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
             -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
           cmake --build "$build" --target strata --parallel 16
-          "$model_state/venv/bin/python" tools/qpn_transition_abba.py \
+          "$model_state/venv/bin/python" tools/qpn_transition_abba.py --supply-profile \
             --source "$PWD" --binary "$build/strata" --prepared "$model_state/prepared" \
             --state "$model_state" --report qpn-transition-abba-results
           "$model_state/venv/bin/python" -m json.tool qpn-transition-abba-results/summary.json >/dev/null
@@ -66,6 +66,7 @@ jobs:
           name: qpn-transition-abba-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             qpn-transition-abba-results/summary.json
+            qpn-transition-abba-results/*-events.json
             qpn-transition-abba-results/processes-before.txt
           if-no-files-found: warn
           retention-days: 14

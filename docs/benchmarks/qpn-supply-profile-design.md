@@ -299,3 +299,40 @@ ready/reuse fences, especially the layer-2 second-chunk boundary.
 A passing synchronized or ungathered control is **not** numerical
 qualification of the default path or a performance result. Never
 enable QPN model-level optimization on these failed traces.
+
+## Performance work resumed with repeatable controls
+
+The MMQ-only ABBA at source `20ae4b3fe4bd9608c059d0e4f7e0e996a8cbb432`,
+[run 41054076458](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41054076458),
+artifact `12976497015`, passed all six within/cross-arm first-logit comparisons
+bitwise (248,320 FP32 elements, L2/KL zero). Median prefill was 17,368.60 ms
+for both-off and 17,208.15 ms for transition fallback: about 0.93% throughput
+improvement, not a material QPN result. All four prior NaN-workaround flags were
+present. QPN executed zero groups. Fresh-process cache temperature was uncontrolled.
+
+User direction is to resume performance work and defer further root-cause debugging.
+`tools/qpn_transition_abba.py --supply-profile` now runs a four-process diagnostic:
+forced-staged tracing off/on, then transition-fallback tracing off/on. The existing
+locked/cached V100 workflow runs this mode; no duplicate automation or GPU workflow
+is introduced. The original ABBA CLI mode remains available without the option.
+Both supply controls retain the known NaN recipe, SHA-pinned model/prompt,
+identical 1024/1023 chunk geometry, full token count, zero QPN execution, and
+strict off/on **bytewise** first-logit parity. Each trace must contain both chunks
+and all sampled layers 0/24/47 with transfer/product/residency accounting. Missing
+work, malformed traces, missing fallback counters, nonfinite output and CUDA errors
+remain hard failures. Logs/logits are private temporary files, removed on exit.
+
+The exported sampled timelines provide compressed expert bytes, interval bandwidth,
+copy/product overlap, ready-event waits, slot reuse waits, gather envelopes, and
+routed group/row residency fractions. Copies beyond routed nonresident groups are
+an opportunity count, not achievable transfer savings: stream-all starts before
+routing is known, and selective lookahead could lose overlap. Hardware occupancy
+and true PCIe saturation are not inferred from CUDA event envelopes. Instrumented
+timings are not a speedup result; warm/cold and realistic lookahead studies remain
+pending. The experiment changes no engine kernels, ring/cache policy, production
+defaults, source model/cache, host services or runner privileges.
+
+Next decision: use the completed trace to identify exposed supply waits and choose
+one isolated selective-supply experiment with a matched MMQ control. Stop QPN layout
+iterations if realistic supply still erases the material benefit. No numerical-quality
+or production promotion is implied by successful MMQ tracing.

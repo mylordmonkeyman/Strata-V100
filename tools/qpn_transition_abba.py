@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 from qpn_full_model_ab import benchmark_env, diff, logits, read_summary, safe_failure_diagnostics, sha
-from qpn_supply_profile import transition_bypass_count
+from qpn_supply_profile import transition_bypass_count, parse_traces
 
 MODEL_SHA = '1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5'
 PROMPT_SHA = 'df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414'
@@ -30,7 +30,7 @@ def mode_flags(mode):
 
 def compare(a, b, ref, candidate):
     d = {k: v for k, v in diff(a, b).items() if k not in ('argmax_base', 'argmax_candidate')}
-    d.update(reference=ref, candidate=candidate, bitwise_equal=(a == b))
+    d.update(reference=ref, candidate=candidate, bitwise_equal=(a.tobytes() == b.tobytes()))
     return d
 
 
@@ -56,11 +56,56 @@ def evaluate(summary, outputs):
     return True
 
 
+def supply_plan():
+    return [('forced-staged', False), ('forced-staged', True),
+            ('transition-fallback', False), ('transition-fallback', True)]
+
+
+def validate_supply_traces(traces, mode):
+    """Require every sampled layer in both pinned chunks; reject partial traces."""
+    if mode not in ('forced-staged', 'transition-fallback'):
+        raise ValueError('invalid supply mode')
+    expected = [(0, 1024), (1024, 1023)]
+    if [(t['chunk'], t['tokens']) for t in traces] != expected:
+        raise ValueError('missing, duplicate or unexpected supply chunk')
+    for i, t in enumerate(traces):
+        if t['stream_all'] != (mode == 'transition-fallback' and i == 0):
+            raise ValueError('unexpected supply regime')
+        if {l['layer'] for l in t['layers']} != {0, 24, 47}:
+            raise ValueError('incomplete sampled layers')
+        for l in t['layers']:
+            if not l['h2d_count'] or not l['products'] or l['routed'] is None:
+                raise ValueError('missing transfer, compute or residency accounting')
+            r = l['routed']
+            l['resident_group_fraction'] = r['resident_groups'] / r['groups'] if r['groups'] else None
+            l['resident_row_fraction'] = r['resident_rows'] / r['rows'] if r['rows'] else None
+            l['routed_nonresident_groups'] = r['groups'] - r['resident_groups']
+            # Counts only: routing lookahead is unavailable before DMA in stream-all.
+            l['copies_beyond_routed_nonresident'] = max(0, l['h2d_count'] - l['routed_nonresident_groups'])
+    return traces
+
+
+def evaluate_supply(summary, outputs):
+    if len(outputs) != 4 or len(summary['runs']) != 4:
+        raise ValueError('incomplete supply control')
+    summary['comparisons'] = [compare(outputs[i], outputs[i+1], mode + '-off', mode + '-trace')
+                              for i, mode in ((0, 'forced-staged'), (2, 'transition-fallback'))]
+    if not all(d['bitwise_equal'] for d in summary['comparisons']):
+        summary['status'] = 'failed_supply_trace_bitwise_parity'
+        return False
+    summary['cross_supply_comparison'] = compare(outputs[0], outputs[2], 'forced-staged', 'transition-fallback')
+    summary['status'] = 'supply_profile_parity_passed_quality_unqualified'
+    return True
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
         p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--supply-profile', action='store_true',
+                   help='profile repeatable forced-staged and transition-fallback off/on controls')
     a = p.parse_args()
+    plan = supply_plan() if a.supply_profile else [(m, False) for m in ORDER]
     a.report.mkdir(parents=True, exist_ok=True)
     a.state.mkdir(parents=True, exist_ok=True)
     prompt = a.state / 'prompt-2048.txt'
@@ -91,6 +136,12 @@ def main():
                                 'MMQ first-logit parity is not an independent GGUF FP64 oracle',
                                 'no QPN execution, CUDA Graph or full-model sanitizer qualification'],
                    runs=[], comparisons=[], status='pending')
+    if a.supply_profile:
+        summary.update(scope='MMQ supply diagnostic: forced-staged and transition-fallback trace off/on',
+                       order=[dict(mode=m, trace=t) for m, t in plan])
+        summary['limitations'] += ['sampled layers 0/24/47 only; no full-model byte total',
+            'event intervals include instrumentation overhead; not occupancy or PCIe link saturation',
+            'no timing speedup inferred from instrumented controls; no realistic lookahead implemented']
     report = a.report / 'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
@@ -99,9 +150,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='qpn-transition-abba-', dir=a.state) as private_dir:
         os.chmod(private_dir, 0o700)
         private = Path(private_dir)
-        for i, mode in enumerate(ORDER):
+        for i, (mode, trace) in enumerate(plan):
             trial = env.copy()
-            trial.update(mode_flags(mode))
+            trial.update(mode_flags('transition-fallback' if mode == 'forced-staged' else mode))
+            trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
+            trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
             log = private / f'{i}.log'
             dump = private / f'{i}.f32'
             trial['STRATA_DUMP_FIRST_LOGITS'] = str(dump)
@@ -113,7 +166,9 @@ def main():
                                           timeout=1100).returncode
                 except subprocess.TimeoutExpired:
                     code = 124
-            row = dict(index=i, mode=mode, returncode=code, wall_s=time.monotonic()-start)
+            row = dict(index=i, mode=mode, trace=trace, stream_min=trial['STRATA_PREFILL_STREAM_MIN'],
+                       control_flags={k: v for k, v in trial.items() if k.startswith('STRATA_') and k != 'STRATA_DUMP_FIRST_LOGITS'},
+                       returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
             save()
@@ -154,10 +209,22 @@ def main():
                 summary['status'] = 'failed_output_shape'
                 save()
                 return 2
+            try:
+                traces = parse_traces(raw)
+                if trace:
+                    validate_supply_traces(traces, mode)
+                    (a.report / f'{mode}-events.json').write_text(json.dumps(traces, indent=2, allow_nan=False) + '\n')
+                    row['trace_chunks'] = len(traces)
+                elif traces:
+                    raise ValueError('unexpected tracing')
+            except (ValueError, KeyError, TypeError):
+                summary['status'] = 'failed_supply_trace_validation'
+                save()
+                return 2
             outputs.append(v)
             save()
             print(f'MMQ ABBA {i+1}/4 {mode} completed', flush=True)
-        ok = evaluate(summary, outputs)
+        ok = evaluate_supply(summary, outputs) if a.supply_profile else evaluate(summary, outputs)
         save()
         return 0 if ok else 3
 
