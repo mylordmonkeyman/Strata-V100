@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "scope": "independently authored synthetic-prompt routing screen; not representative qualification",
+  "source_commit": "2e79bd5ccef53066f706cb321366a2d04084aac7",
+  "model_sha256": "1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5",
+  "binary_sha256": "25cd25c483cf00faaf18dff308fa3edab963e2116c6ecbced8ae5c6ec8866037",
+  "profile_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+  "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "control_flags": {
+    "STRATA_MMQ_KQ": "1",
+    "STRATA_PREFILL_MMQ": "1",
+    "STRATA_ARENA_LOCK": "0",
+    "STRATA_ARENA_PIN_GIB": "1",
+    "STRATA_PREFILL_NVFP4": "w4a8",
+    "STRATA_PREFILL_CPU_SHARE": "0",
+    "STRATA_QPN_PREFILL_EXPERIMENTAL": "0",
+    "STRATA_PREFILL_STREAM_MIN": "4096",
+    "STRATA_PREFILL_GROUP_GATHER": "1"
+  },
+  "requests": [
+    {
+      "prompt_sha256": "4c39210daac4d04e784312dcb2bed6d2cb0b24ac21ef593b841aee5e5f4eb6ce",
+      "input_tokens": 1024,
+      "prefill_capture_sha256": "3c2fdf6e4f7672d0c95ee33e0fe06d03f93dab943917ed2ea688b635b3c8624e",
+      "verification_capture_sha256": "6d4772b768fba7d14560e133a2e5ea88d1358f400d3ea15f12f082cb93f0fb10",
+      "verification_windows": 16,
+      "first_logit_equal": true,
+      "diagnostic_control_trace_timings": [
+        {
+          "prefill_tokens": 1023,
+          "prefill_ms": 7312.8,
+          "ttft_ms": 49595.4,
+          "decode_toks_per_s": 30.34
+        },
+        {
+          "prefill_tokens": 1023,
+          "prefill_ms": 7325.4,
+          "ttft_ms": 47928.5,
+          "decode_toks_per_s": 29.4
+        }
+      ]
+    },
+    {
+      "prompt_sha256": "df3627644dc45559ca15dd11a1b0773e2a06b468431bedfb9a2d4644922cfd46",
+      "input_tokens": 2048,
+      "prefill_capture_sha256": "8f1c9a0727f20d845d8b65c7a428d6bbff0441aee09616ee35dfbb6d2a6bcde8",
+      "verification_capture_sha256": "41d583cc84f9ebb3d0edfdcb6a3425b12eb2e7ed2c01a53dfa694a828434dcbc",
+      "verification_windows": 16,
+      "first_logit_equal": true,
+      "diagnostic_control_trace_timings": [
+        {
+          "prefill_tokens": 2047,
+          "prefill_ms": 12637.0,
+          "ttft_ms": 53346.7,
+          "decode_toks_per_s": 30.19
+        },
+        {
+          "prefill_tokens": 2047,
+          "prefill_ms": 12611.9,
+          "ttft_ms": 53666.6,
+          "decode_toks_per_s": 29.31
+        }
+      ]
+    }
+  ],
+  "common_observed_resident_experts": 9293,
+  "scenarios": [
+    {
+      "replacement_payload_budget_mib": 128,
+      "selected_packed_experts": 48,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 0,
+      "upper_bound_qpn_entries": 0,
+      "prefill_packed_canonical_fallback_expert_uses": 78,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 215655648,
+      "optimistic_qpn_entry_share": 0.0,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 9,
+      "optimistic_verification_restore_bytes": 24883344
+    },
+    {
+      "replacement_payload_budget_mib": 256,
+      "selected_packed_experts": 96,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 2,
+      "upper_bound_qpn_entries": 6442,
+      "prefill_packed_canonical_fallback_expert_uses": 138,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 381544608,
+      "optimistic_qpn_entry_share": 0.00655634261520925,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 14,
+      "optimistic_verification_restore_bytes": 38707424
+    },
+    {
+      "replacement_payload_budget_mib": 512,
+      "selected_packed_experts": 192,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 6,
+      "upper_bound_qpn_entries": 16006,
+      "prefill_packed_canonical_fallback_expert_uses": 245,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 677379920,
+      "optimistic_qpn_entry_share": 0.016290099332356294,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 39,
+      "optimistic_verification_restore_bytes": 107827824
+    },
+    {
+      "replacement_payload_budget_mib": 737,
+      "selected_packed_experts": 272,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 7,
+      "upper_bound_qpn_entries": 18381,
+      "prefill_packed_canonical_fallback_expert_uses": 374,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 1034041184,
+      "optimistic_qpn_entry_share": 0.01870725451880801,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 67,
+      "optimistic_verification_restore_bytes": 185242672
+    },
+    {
+      "replacement_payload_budget_mib": 1024,
+      "selected_packed_experts": 384,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 10,
+      "upper_bound_qpn_entries": 25990,
+      "prefill_packed_canonical_fallback_expert_uses": 525,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 1451528400,
+      "optimistic_qpn_entry_share": 0.02645131086142322,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 93,
+      "optimistic_verification_restore_bytes": 257127888
+    },
+    {
+      "replacement_payload_budget_mib": 2048,
+      "selected_packed_experts": 768,
+      "prefill_routed_entries": 982560,
+      "upper_bound_complete_qpn_groups": 12,
+      "upper_bound_qpn_entries": 30774,
+      "prefill_packed_canonical_fallback_expert_uses": 1198,
+      "canonical_nonresident_routed_entries": 571300,
+      "optimistic_prefill_restore_bytes": 3312249568,
+      "optimistic_qpn_entry_share": 0.03132022471910113,
+      "verification_routed_entries": 14880,
+      "verification_distinct_packed_experts_to_restore": 203,
+      "optimistic_verification_restore_bytes": 561257648
+    }
+  ],
+  "performance_qualified": false,
+  "model_quality_qualified": false,
+  "actual_qpn_decode_executed": false,
+  "actual_accepted_token_decode_qualified": false,
+  "limitations": [
+    "different synthetic topics and lengths; one train/heldout pair only",
+    "arbitrary regrouping upper bound; actual group membership not captured",
+    "static observed resident identities required; dynamic cache not qualified",
+    "native post-prefill verification includes rejected speculative inputs",
+    "first-logit parity only; generated-token parity unqualified",
+    "fresh processes, uncontrolled host cache; instrumented times not speedups",
+    "exposed compute and canonical restoration latency remain unmeasured"
+  ]
+}

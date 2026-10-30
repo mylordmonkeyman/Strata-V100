@@ -53,10 +53,16 @@ The 14,880 routed entries correspond to **31 verification input-token positions*
 
 **R1 decision at this checkpoint:** reject 33–512-row QPN for this observed verification-window geometry. Do **not** build a packed decode/cache-slot prototype on these data. The *prefill-only* single-representation hypothesis remains unqualified, not approved: the previous 21.1% same-trace optimistic eligible-entry bound is not a held-out cache hit rate or time saved; nonresident prepacked full-model QPN already lost; guarded additional VRAM is only 737 MiB. Proceed only after independently held-out prefill and genuinely phase-classified decode samples, measured canonical fallback/restore and exposed critical-path waits, and a plausible ≥5% full-request benefit including transition costs. Otherwise close the R1 subtrack as no-go.
 
-## Decision/next gate
+## Historical decision/next gate (superseded by joint screen below)
 
 1. Verified: the pinned engine captures genuine post-prefill verifier routing without changing first logits. Still obtain bounded **independent** training and held-out *prefill plus phase-classified actual decode* samples privately, and measure trace overhead; do not relabel the single pinned verification trace as held-out or accepted-token decode.
 2. Run this host evaluator and the existing dual-representation capacity analyzer against private data; record useful full 16-expert group counts, mispredictions, and restoration byte bounds. Add canonical-cache miss/slot lifetime changes if selection extends beyond already-resident identities.
 3. Measure exposed stage/copy/compute critical path. A cache proposal must show plausible **≥5% full-workload gain** after decode restoration and fallback, with uncertainty excluding parity. If those observations are unavailable or negative, record R1 as unqualified/stop and do not write GPU cache code.
 
 All modifications remain experimental/default-off on the authorized branch. Main, canonical MMQ/default routing, original expert pack and cache, user services and driver/runner permissions are untouched.
+
+## Completed joint screen
+
+Run 41133416862 completed the two-prompt private joint capture. See
+[qpn-joint-heldout-negative-2026-10-30.md](qpn-joint-heldout-negative-2026-10-30.md).
+Static admission covered only 0–3.132% of held-out routed entries across 128–2048 MiB replacement budgets. Stop this static policy at screening; no packed cache prototype. Runtime feasibility remains UNKNOWN, not a timing-derived failure. Restoration byte fields are format-demand proxies without state simulation.

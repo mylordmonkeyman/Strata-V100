@@ -1,11 +1,5 @@
 name: QPN rev4.2 joint private route screen V100
 on:
-  push:
-    branches: ['qpn/prepacked-stream']
-    paths:
-      - 'tools/qpn_r1_joint_probe.py'
-      - 'tools/test_qpn_r1_joint_probe.py'
-      - '.github/workflows/qpn-r1-private-verify.yml'
   workflow_dispatch:
 permissions:
   contents: read
