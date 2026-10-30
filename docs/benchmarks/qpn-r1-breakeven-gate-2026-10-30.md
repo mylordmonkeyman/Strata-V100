@@ -64,3 +64,25 @@ lossless inverse-layout conversion; include completion fences, scratch and all
 canonical fallbacks. Do not mutate the persistent cache for this measurement.
 Report the removable exposed time and full overhead range for the same request.
 No new packed model cache or full-cache rebuild is justified by the current data.
+
+## Joint request screen implementation
+
+`tools/qpn_r1_joint_probe.py` now captures prefill and native verification within
+each request, consumes both privately, and scores before cleanup. The existing
+private-verification workflow runs four original-MMQ processes: trace off/on for
+an independently authored 1024-token training prompt, then off/on for a distinct
+2048-token held-out prompt. Both are synthetic topic prompts passed through the
+actual model tokenizer/template; their real model routes are not synthetic route
+fixtures. This small pair is not representative held-out qualification.
+
+The predictor uses training-only rows and actual observed resident identities,
+rejecting resident-set changes between chunks or requests. No cache-cap-to-slot
+assumption or held-out selection is used. Full 16-expert grouping remains an
+optimistic regrouping bound. Native post-prefill verification windows contribute
+canonical restoration counts without being labeled accepted-token decode.
+First-logit bitwise parity, complete prefill work, bounded capture, finite logits,
+zero QPN execution and safety checks are mandatory. Token sequences, raw logs and
+routes are private and deleted. Only hashes, counts and explicitly diagnostic
+fresh-process timings are uploaded. Trace runtime is not a speed comparison.
+Exposed-time attribution, restoration latency and representative workloads remain
+open; this run cannot alone authorize cache integration.

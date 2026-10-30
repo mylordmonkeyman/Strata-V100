@@ -1,9 +1,10 @@
-name: QPN rev4.2 private verification route parity V100
+name: QPN rev4.2 joint private route screen V100
 on:
   push:
     branches: ['qpn/prepacked-stream']
     paths:
-      - 'tools/qpn_r1_verify_probe.py'
+      - 'tools/qpn_r1_joint_probe.py'
+      - 'tools/test_qpn_r1_joint_probe.py'
       - '.github/workflows/qpn-r1-private-verify.yml'
   workflow_dispatch:
 permissions:
@@ -19,6 +20,7 @@ jobs:
         with: {persist-credentials: false}
       - run: python3 -m unittest discover -s tools -p test_qpn_r1_verify_convert.py -v
       - run: python3 -m unittest discover -s tools -p test_qpn_r1_verify_probe.py -v
+      - run: python3 -m unittest discover -s tools -p test_qpn_r1_joint_probe.py -v
       - name: Confirm opt-in verification capture compiled into strata_engine
         run: |
           python3 - <<'PY'
@@ -67,7 +69,7 @@ jobs:
             -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
             -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
           cmake --build "$build" --target strata --parallel 16
-          "$model_state/venv/bin/python" tools/qpn_r1_verify_probe.py \
+          "$model_state/venv/bin/python" tools/qpn_r1_joint_probe.py \
             --source "$PWD" --binary "$build/strata" \
             --prepared "$model_state/prepared" --state "$model_state" \
             --report qpn-r1-verify-probe/summary.json
