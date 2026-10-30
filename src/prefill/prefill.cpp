@@ -54,6 +54,7 @@
 #include <cuda_runtime.h>
 #include "qpn_supply_trace.hpp"
 #include "qpn_boundary_capture.hpp"
+#include "qpn_r1_prefill_capture.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -2885,6 +2886,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
     QpnBoundaryCapture boundary(!m.pp && next_ == nullptr);
+    QpnR1PrefillCapture r1_capture(!m.pp && next_ == nullptr);
+    if (!r1_capture.good()) { err = "private R1 prefill capture refused (check isolated output path)"; return false; }
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
@@ -4195,6 +4198,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const int32_t e = ids_h[(size_t) i];
                             if (e < 0 || e >= m.g->n_expert) { err = "prefill: routed id out of range"; return false; }
                             ++m.cnt[(size_t) e];
+                        }
+                        // Private phase-specific route counts: host grouping already published them.
+                        // Default off; no extra GPU readback, and raw IDs never reach logs/artifacts.
+                        if (!r1_capture.record(p0, (int64_t)T, l, K, m.cnt, m.host_res,
+                                               (int32_t)m.g->n_expert, stream_all)) {
+                            err = "private R1 prefill route capture failed"; return false;
                         }
                         if (skip_on) {
                             // this layer's routing is known: publish its own entries (never a later layer's), so the
