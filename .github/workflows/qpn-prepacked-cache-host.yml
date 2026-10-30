@@ -1,0 +1,22 @@
+name: QPN offline compressed layout cache host test
+on:
+  push:
+    branches: ['qpn/prepacked-stream']
+    paths:
+      - 'tools/qpn_prepack_expert_cache.py'
+      - '.github/workflows/qpn-prepacked-cache-host.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cache-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test offline lossless NVFP4 compressed block cache and SHA safety
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/qpn_prepack_expert_cache.py
+          python3 tools/qpn_prepack_expert_cache.py --self-test
