@@ -43,16 +43,18 @@ class Q4TCGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(x['extra_total_body_fraction'], 1 / 15)
         self.assertAlmostEqual(x['extra_selected_experts_mib'], 135)
 
-    def test_extra_memory_versus_replacement_budget_not_conflated(self):
-        x = geometry_screen()['cross_phase_sidecar_optimistic_bounds']
-        self.assertEqual(x['observed_resident_experts'], 9293)
-        self.assertEqual(x['selected_experts_2gib_replacement_screen'], 768)
-        self.assertEqual(x['original_topology_guarded_spare_upper_bound_mib'], 737)
-        self.assertAlmostEqual(x['selected_gate_up_sidecar_body_mib'], 1350)
-        self.assertEqual(x['ideal_gate_up_sidecar_expert_count_upper_bound'], 419)
-        self.assertEqual(x['ideal_all_three_sidecar_expert_count_upper_bound'], 279)
-        self.assertEqual(x['ideal_full_body_replacement_expert_count_in_2gib'], 776)
-        self.assertTrue(x['selected_gate_up_sidecar_exceeds_original_guarded_spare'])
+    def test_one_copy_per_expert_replacement_only(self):
+        x = geometry_screen()['single_representation_replacement_only']
+        self.assertEqual(x['maximum_resident_copies_of_any_expert_weight'], 1)
+        self.assertEqual(x['replacement_budget_mib_not_extra_vram'], 2048)
+        self.assertEqual(x['ideal_q4_body_expert_capacity_in_2gib'], 776)
+        self.assertEqual(x['historical_nvfp4_selected_packed_experts_not_q4_qualified'], 768)
+        self.assertEqual(
+            x['historical_nvfp4_prefill_canonical_format_demands_not_conversions'], 1198)
+        self.assertEqual(x['historical_nvfp4_distinct_native_verification_consumers'], 203)
+        self.assertFalse(x['any_format_transition_or_fallback_timing_measured'])
+        self.assertFalse(x['cross_phase_correctness_qualified'])
+        self.assertNotIn('cross_phase_sidecar_optimistic_bounds', geometry_screen())
 
     def test_quantized_geometry_rejects_unaligned_or_invalid_shapes(self):
         for shape in ((640, 2560, 256, 144), (0, 640, 256, 144),

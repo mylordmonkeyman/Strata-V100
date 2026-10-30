@@ -78,8 +78,9 @@ def score_holdout(test, selected, resident, low=33, high=512, group=GROUP):
             n = len(valid_packed)//group
             totals['upper_bound_complete_qpn_groups'] += n
             totals['upper_bound_qpn_entries'] += sum(x[0] for x in valid_packed[:n*group])
-            # Per-chunk canonical fallback: if a packed expert is routed but
-            # isn't part of a complete QPN group, it needs canonical bytes.
+            # Per-chunk canonical-format demand: a selected packed expert
+            # outside a complete QPN group needs a native-compatible path.
+            # This count is NOT evidence of physical copies or transitions.
             grouped = {e for _,e in valid_packed[:n*group]}
             totals['prefill_packed_canonical_fallback_expert_uses'] += sum(
                 (l,e) in selected and e not in grouped for e in counts)
@@ -109,8 +110,11 @@ def evaluate(train,test,ranking,capacities_mib, native_budget_gib=24,low=33,high
         selected = {p for _,_,group in candidates[:n_groups] for p in group}
         scores = score_holdout(test,selected,resident,low,high)
         results.append(dict(packed_budget_mib=mib, selected_packed_experts=len(selected),
-                            predicted_packed_groups=n_groups, resident_canonical_ids_retained=native_slots,
-                            canonical_ids_evicted=0, **scores))
+                            predicted_packed_groups=n_groups,
+                            resident_canonical_ids_retained=native_slots-len(selected),
+                            canonical_ids_evicted=len(selected),
+                            max_concurrent_resident_weight_copies_per_expert=1,
+                            **scores))
     return dict(native_slots=native_slots, observed_training_candidate_groups=len(candidates),
                 training_prefill_chunks=len(train['prefill']),
                 heldout_prefill_chunks=len(test['prefill']),heldout_decode_windows=len(test['decode']),
@@ -142,10 +146,11 @@ def main():
         selected_rows=[a.min_rows,a.max_rows],
         profile_sha256=profile_sha,training_sha256=private_sha(a.private_training),
         heldout_sha256=private_sha(a.private_heldout),
-        assumptions=['no extra VRAM, original canonical resident expert identities kept, packed subset is a replacement',
+        assumptions=['no duplicate same-expert weight representations: selected canonical bodies are evicted/replaced, not retained',
+                     'native resident identity ranking is held fixed for screening only; allocator fit/retirement unproven',
                      'selection trained on separate prompts; all 16 packed experts must be jointly eligible',
                      'group counts optimistically assume eligible packed experts can be regrouped',
-                     'decode restores distinct packed experts once per request, prefill restorations counted per chunk',
+                     'verification/native-prefill counts are format-consumer DEMANDS, not physical conversion counts or DMA',
                      'source load, transition latency, graph generation, cache-hit dynamics and exposed compute not measured',
                      'routed-entry share is not a prefill-time share or performance gain'])
     a.report.parent.mkdir(parents=True,exist_ok=True)

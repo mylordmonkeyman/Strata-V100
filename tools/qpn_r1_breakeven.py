@@ -15,7 +15,7 @@ NUMERIC_FIELDS = ("mmq_prefill_s", "mmq_decode_s", "qpn_prefill_exposed_s",
 TIMING_FIELDS = NUMERIC_FIELDS[:-2]
 QUALIFICATIONS = ("independent_heldout_qualified", "actual_decode_qualified",
                   "numerical_quality_qualified", "critical_path_measured_qualified",
-                  "memory_fit_measured_qualified")
+                  "memory_fit_measured_qualified", "single_representation_per_expert")
 
 
 def assess(x):
@@ -44,9 +44,13 @@ def assess(x):
             "Measured guarded headroom is an optimistic upper bound, NOT proof of allocator-safe fit.",
             "Verifier windows do not establish accepted-token autoregressive decode.",
             "Qualification flags are input assertions, not independently verified by this calculator.",
-            "No model numerical-quality qualification is implied by a projected speedup."
+            "No model numerical-quality qualification is implied by a projected speedup.",
+            "At no time may one expert have two differently encoded resident copies of the same weights."
         ]
     }
+    if x.get("single_representation_per_expert") is False:
+        out.update(decision="FAIL", failure_reason="dual-format same-expert residency prohibited")
+        return out
     if x.get("packed_bytes") is not None and x.get("safe_headroom_bytes") is not None:
         fits_bound = x["packed_bytes"] <= x["safe_headroom_bytes"]
         out["memory_upper_bound_respected"] = fits_bound
@@ -88,7 +92,7 @@ def assess_feasibility(x):
               "additional_peak_bytes", "available_incremental_bytes")
     gates = ("baseline_measured", "heldout_routes_measured",
              "exposed_compute_measured", "transition_cost_bounded",
-             "memory_budget_bounded")
+             "memory_budget_bounded", "single_representation_per_expert")
     if not isinstance(x, dict):
         raise ValueError("expected feasibility object")
     for k in fields:
@@ -107,7 +111,8 @@ def assess_feasibility(x):
                notes=["Bounds are supplied evidence, not authenticated by this calculator.",
                       "Candidate status requires DDR-1 and safety review before implementation.",
                       "Overhead includes regrouping, dispatch, lost overlap, fallback and canonical restoration.",
-                      "5% means request latency reduction, not throughput increase."])
+                      "5% means request latency reduction, not throughput increase.",
+                      "Never keep differently packed/encoded copies of any expert's same weights simultaneously resident."])
     base = x.get("baseline_request_s")
     if base == 0:
         raise ValueError("baseline request must be positive")
@@ -119,6 +124,9 @@ def assess_feasibility(x):
         raise ValueError("reversed overhead bounds")
     if base is not None and any(v is not None and v > base for v in (lo, hi)):
         raise ValueError("removable time exceeds complete baseline")
+    if x.get("single_representation_per_expert") is False:
+        out.update(decision="STOP", reason="dual-format same-expert residency prohibited")
+        return out
     peak, available = x.get("additional_peak_bytes"), x.get("available_incremental_bytes")
     if peak is not None and available is not None and peak > available:
         out.update(decision="STOP", reason="additional memory exceeds budget")

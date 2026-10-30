@@ -30,45 +30,41 @@ The pinned Superfast root `LICENSE` is MIT and attributes copyright to the ggml 
 
 **Q4-0 source audit: PARTIAL; equal-byte full Q4TC tensor-core path is NOT READY.** Canonical type/shape paths appear present, but the proposed unmodified Superfast packed IQ4_NL down path is ineligible at K=640; QAD FP32 tails are not handled by the existing all-Q4 ABI. No full-model Q4 conversion, GPU kernel, or automatic Q4 pivot is justified. Any future proposal must first resolve partial-K versus fallback with byte/scratch accounting, preserve numerical and licensing gates, and show a bounded exposed-critical-path opportunity. The negative static NVFP4 resident-admission screen and R1 timing UNKNOWN remain unchanged.
 
-## Reproducible host-only Q4TC geometry and cross-phase memory bound
+## Superseding user constraint: single resident representation only (2026-10-30)
 
-The pinned source facts can be calculated without accessing the original
-model or creating a new quant: \`python3 tools/qpn_q4tc_geometry.py --report
-/tmp/qpn-q4tc-geometry.json\` and \`python3 -m unittest discover -s tools -p
-test_qpn_q4tc_geometry.py -v\`.
+**STOP:** No future experiment or benchmark may keep two differently
+packed/encoded copies of one expert's weights resident in VRAM at the same
+time. The previously appended dual-residency sensitivity calculations
+are retired and are not candidate designs. The associated Q4 geometry
+test now covers **replacement-only** capacity, not duplicate residency.
 
-With \`Q4_K\` gate/up at 2,560 input columns and \`IQ4_NL\` down at
-640, the three canonical 4.5-bpw projection bodies are 921,600 bytes each,
-or 2,764,800 bytes per expert **excluding** the QAD 16-byte FP32 scale
-tail. The unmodified Superfast repacker accepts gate/up's 256-column
-geometry but rejects down's 640-column dimension. A *hypothetical*
-mixed gate/up-packed, canonical-down design offers nominal 2/3
-packed weight-body/MAC coverage, **not** measured acceleration and not a
-complete executable pipeline. A custom 128-column remainder could in
-principle cover 80% of the down input dimension with two full 256-column
-fragments, leaving 20% as a new partial path; it requires unimplemented
-code and has no speed or quality evidence.
+Host-only command: `python3 tools/qpn_q4tc_geometry.py --report
+/tmp/qpn-q4tc-single-representation.json` and
+`python3 -m unittest discover -s tools -p test_qpn_q4tc_geometry.py -v`.
 
-Padding IQ4_NL down to 768 columns would increase down storage by 20%
-(184,320 bytes per expert), total three-projection weight-body storage
-by 6.67%, and would add 135 MiB across the previously selected 768
-experts. It is **not equal-byte**, and valid zero padding/scale-tail
-semantics would need proof.
+The canonical Q4_K gate/up and IQ4_NL down each require 921,600 bytes
+at the stated geometry (2,764,800 bytes of expert body total, without
+the original QAD FP32 scale tail). A 2 GiB **replacement** budget
+mathematically holds at most 776 such Q4 bodies, before any scratch,
+metadata, fragmentation, and format-state costs. This is not evidence
+of Q4 expert eligibility, numerical quality, or actual allocator fit.
+The prior NVFP4 screening selected 768 experts and observed 1,198
+prefill canonical-format demands and 203 native verification consumers
+among them; those measurements do **not** qualify a Q4 workload or
+determine how many format transitions would be required.
 
-**Cross-phase native-verification constraint:** preserving original
-canonical gate/up *and* holding a separately packed gate/up body for
-all 768 selected experts would require **1,350 MiB** of extra weight
-bodies, before scratch, metadata or allocator fragmentation. The earlier
-**737 MiB guarded spare-memory observation applies to the original NVFP4
-configuration**, not a new Q4 model. As a *conditional comparator*,
-737 MiB would hold at most 419 such gate/up-only sidecars (or 279
-all-three-projection sidecars), ignoring all other allocations. This
-does **not** cap replacement payload or certify Q4 allocator fit.
-Replacing canonical bytes instead avoids duplicate storage but leaves
-lossless restoration and native verification demands unmeasured.
+Unmodified Superfast QPN handles 2560-column gate/up geometry, but not
+640-column IQ4_NL down. A one-copy-per-weight **mixed-projection**
+layout (packed gate/up, canonical down) is conceptually distinct from
+keeping duplicate gate/up sets: each projection still has one resident
+weight representation. It remains unimplemented and not qualified for
+native verification or a 5% request-latency gain. Padding down to 768
+columns is not equal-byte, and a partial-128 path is likewise
+unimplemented. A same-expert format transition would need to retire
+the prior resident representation *before* making the replacement
+resident; if that cannot be done correctly and safely, STOP.
 
-**Decision remains Q4TC source/geometry PARTIAL and NOT READY.** This
-is a constrained host-only alternatives analysis, with no raw private
-model/route access, no conversion, no GPU kernel, no new model A/B, and
-no relaxation of the rev4.2 R1/R3 gates. Existing static NVFP4 admission
-is still STOPPED and full-request timing feasibility UNKNOWN.
+**Decision: Q4TC source/geometry PARTIAL; no prototype, no conversion,
+no new GPU run.** Static NVFP4 admission remains STOPPED and R1 timing
+remains UNKNOWN. Full-model decode, numerical quality and exposed-time
+costs have not been qualified.

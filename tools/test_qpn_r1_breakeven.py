@@ -18,7 +18,8 @@ class BreakEvenTests(unittest.TestCase):
         x=self.base()
         x.update(independent_heldout_qualified=True,
                  actual_decode_qualified=True, numerical_quality_qualified=True,
-                 critical_path_measured_qualified=True, memory_fit_measured_qualified=True)
+                 critical_path_measured_qualified=True, memory_fit_measured_qualified=True,
+                 single_representation_per_expert=True)
         self.assertEqual(assess(x)["decision"], "PASS")
 
     def test_slow_fails(self):
@@ -61,6 +62,24 @@ class BreakEvenTests(unittest.TestCase):
         self.assertEqual(r["decision"], "UNKNOWN")
         self.assertIn("qpn_prefill_exposed_s", r["missing_measurements"])
 
+    def test_reject_two_resident_formats_even_if_other_gates_pass(self):
+        x=self.base()
+        x.update(independent_heldout_qualified=True, actual_decode_qualified=True,
+                 numerical_quality_qualified=True, critical_path_measured_qualified=True,
+                 memory_fit_measured_qualified=True, single_representation_per_expert=False)
+        r=assess(x)
+        self.assertEqual(r['decision'], 'FAIL')
+        self.assertIn('dual-format', r['failure_reason'])
+
+    def test_single_representation_missing_cannot_pass(self):
+        x=self.base()
+        x.update(independent_heldout_qualified=True, actual_decode_qualified=True,
+                 numerical_quality_qualified=True, critical_path_measured_qualified=True,
+                 memory_fit_measured_qualified=True)
+        r=assess(x)
+        self.assertEqual(r['decision'], 'UNKNOWN')
+        self.assertIn('single_representation_per_expert', r['unqualified_gates'])
+
     def test_missing_is_unknown(self):
         x=self.base()
         del x["restore_s"]
@@ -75,7 +94,8 @@ class FeasibilityTests(unittest.TestCase):
                     maximum_overhead_s=4, additional_peak_bytes=100,
                     available_incremental_bytes=200, baseline_measured=True,
                     heldout_routes_measured=True, exposed_compute_measured=True,
-                    transition_cost_bounded=True, memory_budget_bounded=True)
+                    transition_cost_bounded=True, memory_budget_bounded=True,
+                    single_representation_per_expert=True)
 
     def test_candidate_does_not_require_unbuilt_candidate_quality(self):
         r=assess_feasibility(self.data())
@@ -105,6 +125,23 @@ class FeasibilityTests(unittest.TestCase):
                        {'additional_peak_bytes':True}, {'maximum_overhead_s':float('nan')}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 assess_feasibility(dict(self.data(), **change))
+
+    def test_dual_residency_stops_even_when_time_unknown(self):
+        self.assertEqual(assess_feasibility(
+            dict(single_representation_per_expert=False))['decision'], 'STOP')
+
+    def test_single_representation_missing_is_not_a_candidate(self):
+        x=self.data()
+        del x['single_representation_per_expert']
+        r=assess_feasibility(x)
+        self.assertEqual(r['decision'], 'UNKNOWN')
+        self.assertIn('single_representation_per_expert', r['unqualified_gates'])
+
+    def test_invalid_single_representation_flag_rejected(self):
+        for bad in ('true', 1, 0, None):
+            x=self.data()
+            x['single_representation_per_expert']=bad
+            with self.assertRaises(ValueError): assess_feasibility(x)
 
     def test_headroom_alone_unknown(self):
         self.assertEqual(assess_feasibility(dict(available_incremental_bytes=737*1048576))['decision'], 'UNKNOWN')

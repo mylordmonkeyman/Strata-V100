@@ -59,9 +59,11 @@ an executed verification window consumed canonical weights. First-logit parity
 alone does not validate the later generation sequence.
 
 Time eligible resident work, gathers, exposed CPU staging and copy/slot waits with
-trace-off controls. Use temporary isolated buffers to bound canonical reload or
-lossless inverse-layout conversion; include completion fences, scratch and all
-canonical fallbacks. Do not mutate the persistent cache for this measurement.
+trace-off controls. Before any authorized conversion study, demonstrate a
+single-representation lifetime plan: no temporary second same-expert weight
+copy, complete retirement before repacking or reloading, and separately
+bounded completion fences, scratch and native fallbacks. Do not mutate the
+persistent cache for this measurement.
 Report the removable exposed time and full overhead range for the same request.
 No new packed model cache or full-cache rebuild is justified by the current data.
 
@@ -86,3 +88,28 @@ routes are private and deleted. Only hashes, counts and explicitly diagnostic
 fresh-process timings are uploaded. Trace runtime is not a speed comparison.
 Exposed-time attribution, restoration latency and representative workloads remain
 open; this run cannot alone authorize cache integration.
+
+## Superseding single-representation prohibition (2026-10-30)
+
+A new mandatory boolean evidence assertion,
+`single_representation_per_expert`, applies at **both** R1 feasibility
+and R3 final qualification. When false, R1 returns **STOP** and R3
+**FAIL**, regardless of potentially favorable time/memory inputs.
+When missing, neither stage can yield a candidate/qualification.
+A true assertion is necessary, not sufficient: independent review of
+the actual allocator lifetime and any format transition is required.
+
+A candidate may hold only **one resident weight copy per expert**
+at any moment, including while changing formats and serving native
+verification. Never maintain original canonical and separately packed
+weights for the same expert together, even as a temporary strategy.
+Using canonical weights for *different* nonpacked experts is allowed.
+All temporary scratch allocations must obey this constraint, and
+representations must be retired before a differently encoded replacement
+becomes resident. If the applicable native path cannot consume the one
+resident layout, or a safe bounded change cannot be established, STOP.
+
+The older memory and restore-byte estimates are demand proxies only;
+they do not establish physical DMA, conversions, allocatable scratch,
+or a viable lifetime schedule. No new GPU jobs or weight-set variants
+are authorized by this gate.

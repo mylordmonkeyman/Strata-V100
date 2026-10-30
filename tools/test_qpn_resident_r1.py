@@ -23,7 +23,19 @@ class TestResidentR1(unittest.TestCase):
         self.assertEqual(sc['upper_bound_qpn_entries'],1280)
         self.assertEqual(sc['decode_distinct_packed_experts_to_restore'],3)
         self.assertEqual(sc['optimistic_decode_restore_bytes'],3*PACKED_BLOB)
-        self.assertEqual(sc['canonical_ids_evicted'],0)
+        self.assertEqual(sc['canonical_ids_evicted'],sc['selected_packed_experts'])
+        self.assertEqual(sc['resident_canonical_ids_retained']+
+                         sc['canonical_ids_evicted'],scores['native_slots'])
+        self.assertEqual(sc['max_concurrent_resident_weight_copies_per_expert'],1)
+
+    def test_no_selected_subset_keeps_two_resident_formats(self):
+        scores=evaluate(self.train,self.test,self.ranking,[0,128,256],24)
+        for sc in scores['scenarios']:
+            self.assertEqual(sc['max_concurrent_resident_weight_copies_per_expert'],1)
+            self.assertEqual(sc['canonical_ids_evicted'],sc['selected_packed_experts'])
+            self.assertEqual(sc['resident_canonical_ids_retained']+
+                             sc['selected_packed_experts'], scores['native_slots'])
+            self.assertLessEqual(sc['selected_packed_experts'], scores['native_slots'])
 
     def test_incomplete_group_requires_canonical(self):
         selected={(0,e) for e in range(16)}
