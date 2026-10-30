@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/core/verify.cpp'
       - 'include/strata/core/verify.hpp'
+      - 'cmake/volta_qpn.cmake'
       - 'tools/qpn_r1_verify_convert.py'
       - 'tools/test_qpn_r1_verify_convert.py'
       - '.github/workflows/qpn-r1-verify-compile.yml'
