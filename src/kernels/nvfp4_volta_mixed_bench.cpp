@@ -148,7 +148,7 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false;
+    std::string wp,xp,cp,packed_path;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
@@ -160,6 +160,7 @@ int main(int argc,char** argv)try{
         if(flag=="--weights")wp=val;
         else if(flag=="--activations")xp=val;
         else if(flag=="--counts")cp=val;
+        else if(flag=="--qpn-packed-file")packed_path=val;
         else if(flag=="--iterations")iterations=std::stoi(val);
         else if(flag=="--rounds")rounds=std::stoi(val);
         else if(flag=="--qpn-min")qpn_min=std::stoi(val);
@@ -173,11 +174,17 @@ int main(int argc,char** argv)try{
        ((qpn_min==1||qpn_min==17)&&qpn_max!=128) ||
        (fused_gu && (qpn_min!=129 || qpn_max!=512)) ||
        (chunkmajor && !fused_gu) ||
-       (pinned_stream && (!chunkmajor||qpn_min!=129||qpn_max!=512)))
+       (pinned_stream && (!chunkmajor||qpn_min!=129||qpn_max!=512)) ||
+       (!packed_path.empty() && !pinned_stream))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
     auto host_w=read_file(wp,E*STRIDE);
+    const auto cache_load_begin=std::chrono::steady_clock::now();
+    std::vector<uint8_t> disk_prepacked_w;
+    if(!packed_path.empty())disk_prepacked_w=read_file(packed_path,E*STRIDE);
+    const double cache_load_us=packed_path.empty()?0:
+        std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-cache_load_begin).count();
     auto host_x=read_file(xp,size_t(rows)*N*4);
     // Offline partition of the SAME private real expert rows and weights
     // for both arms: MMQ fallback prefix then selected QPN candidates.
@@ -202,18 +209,24 @@ int main(int argc,char** argv)try{
         std::array<int,E+1> original{};
         for(int i=0;i<E;i++)original[i+1]=original[i]+counts[i];
         std::vector<uint8_t> new_w(host_w.size()),new_x(host_x.size());
+        std::vector<uint8_t> new_prepacked;
+        if(!disk_prepacked_w.empty())new_prepacked.resize(disk_prepacked_w.size());
         std::vector<int> reordered;reordered.reserve(E);
         size_t next_row=0;
         for(int src:order){
             const int n=counts[src];
             std::memcpy(new_w.data()+reordered.size()*STRIDE,
                         host_w.data()+size_t(src)*STRIDE,STRIDE);
+            if(!disk_prepacked_w.empty())
+                std::memcpy(new_prepacked.data()+reordered.size()*STRIDE,
+                            disk_prepacked_w.data()+size_t(src)*STRIDE,STRIDE);
             std::memcpy(new_x.data()+next_row*N*4,
                         host_x.data()+size_t(original[src])*N*4,size_t(n)*N*4);
             next_row+=size_t(n);reordered.push_back(n);
         }
         if(next_row!=size_t(rows))throw std::runtime_error("reorder lost or duplicated rows");
         host_w.swap(new_w);host_x.swap(new_x);counts.swap(reordered);
+        if(!disk_prepacked_w.empty())disk_prepacked_w.swap(new_prepacked);
     }
     const int fallback_groups=E-candidates;
     std::array<int,E+1> bounds{};
@@ -253,7 +266,11 @@ int main(int argc,char** argv)try{
     std::unique_ptr<Pinned> pinned_canonical,pinned_qpn;
     if(chunkmajor) {
         const auto begin=std::chrono::steady_clock::now();
-        std::vector<uint8_t> reordered_w=host_w;
+        // The offline cache stores original expert order. It was reordered
+        // alongside the canonical source above, and its manifest/source SHA
+        // was independently verified by the runner before launching here.
+        std::vector<uint8_t> reordered_w =
+            disk_prepacked_w.empty()?host_w:std::move(disk_prepacked_w);
         auto repack_projection=[&](int expert,std::size_t mat_offset,int nrows,int kcols){
             if(kcols%64)throw std::runtime_error("invalid NVFP4 repack K");
             const int blocks=kcols/64;
@@ -263,10 +280,11 @@ int main(int argc,char** argv)try{
                 std::memcpy(dst+(std::size_t(st)*nrows+row)*36,
                             src+(std::size_t(row)*blocks+st)*36,36);
         };
-        for(int expert=fallback_groups;expert<E;expert++) {
-            repack_projection(expert,0,GU,N);
-            repack_projection(expert,2*MAT,N,F);
-        }
+        if(packed_path.empty())
+            for(int expert=fallback_groups;expert<E;expert++) {
+                repack_projection(expert,0,GU,N);
+                repack_projection(expert,2*MAT,N,F);
+            }
         const auto packed=std::chrono::steady_clock::now();
         packed_w=std::make_unique<Dev>(host_w.size());
         if(pinned_stream) {
@@ -279,7 +297,8 @@ int main(int argc,char** argv)try{
             std::memcpy(pinned_qpn->p,
                 reordered_w.data()+std::size_t(fallback_groups)*STRIDE,selected);
             const auto prepared=std::chrono::steady_clock::now();
-            weight_pack_cpu_us=std::chrono::duration<double,std::micro>(prepared-begin).count();
+            weight_pack_cpu_us=packed_path.empty()?
+                std::chrono::duration<double,std::micro>(prepared-begin).count():0.0;
             weight_pack_upload_us=0;
         } else {
             packed_w->put(reordered_w.data(),reordered_w.size());
@@ -476,8 +495,8 @@ int main(int argc,char** argv)try{
         check_canary();
     }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"pinned_stream\":%s,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"control_h2d_bytes\":%zu,\"hybrid_h2d_bytes\":%zu,\"routed_rows\":%d,",
-                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",pinned_stream?"true":"false",weight_pack_cpu_us,weight_pack_upload_us,pinned_stream?canonical_h2d:0,pinned_stream?fallback_h2d+packed_h2d:0,rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"pinned_stream\":%s,\"disk_prepacked\":%s,\"cache_load_us\":%.6f,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"control_h2d_bytes\":%zu,\"hybrid_h2d_bytes\":%zu,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",pinned_stream?"true":"false",packed_path.empty()?"false":"true",cache_load_us,weight_pack_cpu_us,weight_pack_upload_us,pinned_stream?canonical_h2d:0,pinned_stream?fallback_h2d+packed_h2d:0,rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
     std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
