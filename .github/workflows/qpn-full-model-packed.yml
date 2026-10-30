@@ -1,0 +1,105 @@
+name: QPN offline-prepacked full-model staged prefill ABBA
+on:
+  push:
+    branches: ['qpn/prepacked-stream']
+    paths:
+      - 'src/prefill/prefill.cpp'
+      - 'include/strata/prefill/qpn_experiment_policy.hpp'
+      - 'tests/qpn_prefill_policy_test.cpp'
+      - 'tools/qpn_full_model_ab.py'
+      - 'tools/qpn_prepack_expert_cache.py'
+      - 'tools/test_qpn_prepack_accelerated.py'
+      - '.github/workflows/qpn-full-model-packed.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: |
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/qpn_prefill_policy_test.cpp -o /tmp/qpn-policy
+          /tmp/qpn-policy
+          python3 -m unittest discover -s tools -p test_qpn_full_model_perf.py -v
+          python3 tools/qpn_prepack_expert_cache.py --self-test
+  model:
+    needs: [host]
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 180
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+      CUDA_MODULE_LOADING: EAGER
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build once, prepare private immutable cache, run matched full-model ABBA
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          mkdir -p qpn-model-packed-results
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          nvidia-smi --id=0 --query-compute-apps=pid,process_name --format=csv,noheader > qpn-model-packed-results/processes-before.txt
+          if grep -Eq '^[[:space:]]*[0-9]+,' qpn-model-packed-results/processes-before.txt; then
+            echo 'GPU has compute clients; refusing full-model benchmark' >&2; exit 2
+          fi
+          model_state="$QPN_STATE_DIR/full-model"
+          build="$QPN_STATE_DIR/builds/qpn-full-model-opt-in"
+          py="$model_state/venv/bin/python"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
+          cmake --build "$build" --target strata --parallel 16
+          "$py" -m unittest discover -s tools -p test_qpn_prepack_accelerated.py -v
+          cache_dir="$(mktemp -d "$model_state/qpn-model-packed-XXXXXXXX")"
+          chmod 700 "$cache_dir"
+          cleanup() { rm -f "$cache_dir/experts.bin" "$cache_dir/manifest.json"; rmdir "$cache_dir" || true; }
+          trap cleanup EXIT
+          "$py" - "$model_state/prepared/pack/experts.bin" "$cache_dir" <<'PY'
+          import json,pathlib,shutil,sys,time
+          sys.path.insert(0,'tools')
+          from qpn_prepack_expert_cache import convert,digest_file
+          source,cache=map(pathlib.Path,sys.argv[1:])
+          if source.is_symlink() or source.stat().st_size!=48*512*2764816:
+              raise ValueError('unsupported model cache geometry')
+          if shutil.disk_usage(cache).free<source.stat().st_size+(8<<30):
+              raise ValueError('insufficient temporary disk space; source/cache remain unchanged')
+          start=time.monotonic()
+          meta=convert(source,cache/'experts.bin',cache/'manifest.json',2560,640,
+              '1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5',48*512,False,fast=True)
+          if digest_file(cache/'experts.bin')!=meta['cache_sha256']:
+              raise ValueError('offline packed cache SHA mismatch')
+          report={k:meta[k] for k in ('layout','version','source_sha256','cache_sha256','experts','total_bytes')}
+          report.update(cache_preparation_s=time.monotonic()-start,temporary=True,original_source_unchanged=True)
+          pathlib.Path('qpn-model-packed-results/cache-provenance.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('Private offline cache prepared and SHA verified; contents stay on runner',flush=True)
+          PY
+          for rows in 9:32 33:512; do
+            "$py" tools/qpn_full_model_ab.py --source "$PWD" --binary "$build/strata" \
+              --prepared "$model_state/prepared" --state "$model_state" \
+              --report "qpn-model-packed-results/rows-${rows/:/-}" \
+              --packed-cache "$cache_dir" --qpn-range "$rows" --prefill 1024 --runs 4 --performance-only
+          done
+      - name: Upload aggregate metadata only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-model-packed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-model-packed-results/cache-provenance.json
+            qpn-model-packed-results/rows-*/summary.json
+            qpn-model-packed-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14

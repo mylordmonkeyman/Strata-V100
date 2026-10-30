@@ -96,3 +96,71 @@ The original full sweep remains available by omitting this option.
 This remains fixture-level qualification, with capped **prefill-captured** inputs,
 not a fresh capture of actual autoregressive decode routing or full-model TPS.
 Real prepacked model prefill and decode still need the isolated hooks above.
+
+
+## Completed fixture evidence and model prefill hook
+
+The 45-case MMQ/prepacked sweep passed at source `631cf5559ded7b85884b82d16c66e5a1a39b9ef7`,
+run `41069524079`, artifact `12985012928`. All six representative three-iteration
+memcheck/racecheck checks passed. The 15-case production-native decode comparator
+passed at source `b600c08759ab619fdd6c4b21fe44c76be088b503`, run `41073880043`,
+artifact `12985149612`, including all four representative sanitizer checks.
+Typed aggregates are committed under `benchmarks/qpn/results/2026-10-30-prepacked-*.json`.
+All cases passed sampled independent oracle, finite/output guards and changed-input
+ordinary/Graph replay checks. This is still fixture-level qualification.
+
+| Original routed prefill range | Resident speed ratio | Serial H2D speed ratio | Two-stream pipeline ratio |
+|---|---:|---:|---:|
+| 9–16 | 1.16466 | 1.03284 | 0.99848 |
+| 17–32 | 1.16544 | 1.03542 | 0.99988 |
+| 33–512 combined | 1.37728 | 1.07275 | 1.00460 |
+
+These ratios describe the **complete hybrid 16-expert workload**, not just selected
+expert latency. Grouping selections can change MMQ max-row padding and launch shape;
+combined buckets need not equal the sum of individual-bucket gains. The full tables
+also preserve losing buckets. Serial and overlap paths are distinct experiments;
+ordinary/Graph timing in an overlap-configured case is still serial, so use the
+explicit pipeline ratio for overlap conclusions.
+
+For capped 1/2/4/8/16-row inputs, resident QPN/native-DP4A ratios were respectively
+0.15730 / 0.18271 / 0.25251 / 0.37695 / 0.70283. Serial-H2D ratios ranged 0.87997–0.95831;
+overlap pipeline ratios 0.97992–0.99108. Every decode-shaped configuration lost to
+the actual production arithmetic comparator. No promising prepacked decode selector
+is established, so no production decode dispatch or cache change is justified by
+these measurements. Do not call these full-model autoregressive decode TPS results.
+
+The new opt-in model prefill hook accepts `STRATA_QPN_PREFILL_PACKED_DIR`, plus
+`STRATA_QPN_PREFILL_MIN_ROWS` / `MAX_ROWS`. The runner prepares a separate temporary
+full-model cache offline with the same codec. A vectorized bounded-memory encoder
+is byte-for-byte checked against the original block-loop reference, and every
+expert still round-trips before publication. Source/cache SHA, immutable source,
+model geometry, cache size and disk headroom are mandatory. No persistent model
+cache is overwritten. Cache preparation time is reported separately.
+
+Within the existing staged prefill protocol, only **nonresident experts in groups
+actually owned by QPN** read the alternate host source. Eligible experts stranded
+in a mixed MMQ group still read canonical bytes. The original pinned staging jobs,
+slot-ready/consumed fences, grouped byte copies and output-order/scale contracts
+remain. Resident cache slots remain canonical and use MMQ. Group routing selection
+is identical in the MMQ plan-control arm. Both arms map the same cache and allocate
+matching persistent scratch; there is no per-forward weight conversion. QPN scratch
+now accommodates up to the explicitly configured 512-row limit. Packed kernels
+read grouped GU/down byte copies in chunk-major order; original nonpacked behavior
+and the default-off path remain intact.
+
+The new workflow runs actual full-model staged 1024/1023-token prefill ABBA for
+9–32 and 33–512 ranges, with `STREAM_MIN=4096`, pinned model/prompt, all four prior
+NaN flags, complete 2047-token work, zero-QPN MMQ controls, mandatory candidate QPN
+execution, finite logits and safety/error checks, and explicit KL/argmax reporting.
+Decode remains the original backend in both arms and its logged TPS is diagnostic,
+not a QPN-decode performance result. Private raw logs/logits and the temporary cache
+are removed. The earlier selective-supply diagnostic remains manually dispatchable;
+its automatic trigger is disabled to avoid unrelated GPU jobs on this new hook.
+
+**Pending gates:** V100 compilation and these full-model measurements; full-model
+packed-path sanitizer/intermediate guards and changed-input model Graph remain
+unqualified. Model Graph capture is explicitly refused by the new hook. D4/MMQ input
+alignment is still not repaired; QPN uses the existing raw-FP16 experimental input
+path, so performance-only output KL must be recorded without certification. A
+successful job is not production qualification. No original model/cache/default
+MMQ, main, services, driver, or runner privileges are modified.

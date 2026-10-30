@@ -11,6 +11,7 @@ import re
 import statistics
 import subprocess
 import time
+import tempfile
 
 # User's previously verified NaN benchmark recipe. Sanitization must preserve
 # these explicitly; all compared arms receive the same controlled settings.
@@ -150,6 +151,8 @@ def main():
     for name in ("source","binary","prepared","state","report"):p.add_argument("--"+name,required=True,type=Path)
     p.add_argument("--prefill",type=int,default=768)
     p.add_argument("--runs",type=int,default=4)
+    p.add_argument("--packed-cache",type=Path)
+    p.add_argument("--qpn-range",default="17:32")
     choices=p.add_mutually_exclusive_group()
     choices.add_argument("--fusion-ab",action="store_true",
                    help="A=original QPN, B=fused per-expert QPN")
@@ -160,13 +163,34 @@ def main():
     p.add_argument("--performance-only",action="store_true",
                    help="record first-logit KL and top-1, but do not fail A/B solely on model-quality threshold")
     a=p.parse_args()
-    if a.prefill!=768 or a.runs!=4:raise ValueError("only pinned 768-token ABBA experiment qualified")
+    low,high=map(int,a.qpn_range.split(':'))
+    if a.runs!=4 or a.prefill not in ((768,1024) if a.packed_cache else (768,)):
+        raise ValueError("unsupported pinned ABBA geometry")
+    if low<1 or high<low or high>512 or (not a.packed_cache and (low,high)!=(17,32)):
+        raise ValueError("unsupported QPN row range")
+    if a.packed_cache and (a.fusion_ab or a.batched_ab or a.batched_mmq_ab):
+        raise ValueError("packed model experiment uses per-expert fused QPN versus MMQ")
     a.report.mkdir(parents=True,exist_ok=True)
     a.state.mkdir(parents=True,exist_ok=True)
-    private=a.state/"qpn-opt-in-ab";private.mkdir(parents=True,exist_ok=True)
+    private_context=tempfile.TemporaryDirectory(prefix="qpn-model-ab-",dir=a.state)
+    private=Path(private_context.name);os.chmod(private,0o700)
     tokenfile=a.state/"prompt-2048.txt"
     if not tokenfile.is_file() or not (a.prepared/"pack/experts.bin").is_file():
         raise ValueError("the pinned private prepared model / prompt is missing")
+    cache_meta=None
+    if a.packed_cache:
+        meta=json.loads((a.packed_cache/'manifest.json').read_text())
+        source=a.prepared/'pack/experts.bin';packed=a.packed_cache/'experts.bin'
+        source_hash=sha(source)
+        if (source_hash!='1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5' or
+            sha(tokenfile)!='df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414' or
+            meta['layout']!='strata-qpn-nvfp4-chunkmajor-v1' or meta['version']!=1 or
+            meta['source_sha256']!=source_hash or meta['experts']!=48*512 or
+            (meta['rows_N'],meta['hidden_FF'],meta['bytes_per_expert'])!=(2560,640,2764816) or
+            meta['total_bytes']!=source.stat().st_size or packed.is_symlink() or
+            packed.stat().st_size!=meta['total_bytes'] or sha(packed)!=meta['cache_sha256']):
+            raise ValueError('model packed cache/source SHA or geometry mismatch')
+        cache_meta={k:meta[k] for k in ('layout','version','source_sha256','cache_sha256','experts','total_bytes')}
     env=benchmark_env()
     env.update({"STRATA_PREFILL_NVFP4":"w4a8",
                 "STRATA_QPN_PREFILL_PLAN_CONTROL":"1",  # both arms get identical host expert order
@@ -180,8 +204,12 @@ def main():
          "--native-dense-gguf",str(a.prepared/"dense.gguf"),"--ple-gguf",str(a.prepared/"ple-nvfp4.gguf"),
          "--tokens-file",str(tokenfile),"--max-context","4096","--max-new","16","--greedy",
          "--expert-cache","auto","--expert-profile",str(a.source/"data/expert-profile.bin"),
-         "--resident-budget-gib","24","--pool-workers","16","--prefill","768","--spec","2",
+         "--resident-budget-gib","24","--pool-workers","16","--prefill",str(a.prefill),"--spec","2",
          "--suffix-draft","0","--adapt-every","0","--vram-reserve-mib","1536","--stats"]
+    if a.packed_cache:
+        env.update(STRATA_QPN_PREFILL_PACKED_DIR=str(a.packed_cache),
+                   STRATA_QPN_PREFILL_MIN_ROWS=str(low),STRATA_QPN_PREFILL_MAX_ROWS=str(high),
+                   STRATA_PREFILL_STREAM_MIN='4096')
     modes=ab_modes(a.fusion_ab,a.batched_ab,a.batched_mmq_ab)
     summary={'schema':2,'scope':'performance-focused staged 768-row full-model ABBA; not default 1024 stream-all path',
              'control_mode':modes[0],'candidate_mode':modes[1],
@@ -189,15 +217,24 @@ def main():
              'source_commit':subprocess.check_output(["git","-C",str(a.source),"rev-parse","HEAD"],text=True).strip(),
              'model_sha256':sha(a.prepared/"pack/experts.bin"),
              'binary_sha256':sha(a.binary),'prompt_sha256':sha(tokenfile),
-             'control_flags':{k:v for k,v in env.items() if k.startswith("STRATA_")},
+             'control_flags':{k:('<private-cache>' if k=='STRATA_QPN_PREFILL_PACKED_DIR' else v) for k,v in env.items() if k.startswith("STRATA_")},
              'runs':[],'comparisons':[],'status':'pending'}
+    if a.packed_cache:
+        summary.update(scope='actual full-model staged prefill, nonresident prepacked QPN versus matched-order MMQ',
+                       packed_cache=cache_meta,qpn_range=[low,high],prefill_chunk=a.prefill,
+                       qpn_decode_executed=False,
+                       limitations=['nonresident QPN only; canonical resident experts stay MMQ',
+                                    'raw FP16 QPN input; D4 MMQ alignment and model quality unqualified',
+                                    'decode uses original backend in both arms; decode TPS is diagnostic only',
+                                    'fresh processes; uncontrolled page-cache temperature; no warm-engine claim',
+                                    'full-model graph and sanitizer qualification not established'])
     outfile=a.report/"summary.json"
     def persist():outfile.write_text(json.dumps(summary,indent=2,sort_keys=True)+"\n")
     persist()
     for idx,mode in enumerate(modes):
         trialenv=env.copy()
         trialenv['STRATA_QPN_PREFILL_EXPERIMENTAL']='0' if mode=='mmq' else '1'
-        trialenv['STRATA_QPN_PREFILL_FUSED_GU']='1' if mode in ('qpn-fused','qpn-batched') else '0'
+        trialenv['STRATA_QPN_PREFILL_FUSED_GU']='1' if a.packed_cache or mode in ('qpn-fused','qpn-batched') else '0'
         trialenv['STRATA_QPN_PREFILL_BATCHED']='1' if mode=='qpn-batched' else '0'
         raw_log=private/f"{idx}-{mode}.log"
         raw_logits=private/f"{idx}-{mode}.logits.f32"
@@ -217,6 +254,8 @@ def main():
         row={'index':idx,'mode':mode,'returncode':code,'wall_s':time.monotonic()-started,
              'raw_log_private':True,'raw_logits_private':True}
         row.update(read_summary(raw_log))
+        if re.search(r'non[- ]finite|illegal memory access|CUDA error|device-side assert',raw_log.read_text(errors='replace'),re.I):
+            summary['status']='failed_safety';summary['runs'].append(row);persist();return 2
         if code!=0:row['startup_diagnostics']=safe_failure_diagnostics(raw_log)
         if code==0 and raw_logits.is_file():
             row['first_logits_sha256']=sha(raw_logits)
@@ -224,18 +263,29 @@ def main():
         summary['runs'].append(row)
         persist()
         print(f"full-model ABBA {idx}: {mode} exit={code} TTFT={row['ttft_ms']} ms QPN groups={row['qpn_groups']}",flush=True)
-        if(code!=0 or row['ttft_ms'] is None or row['decode_toks_per_s'] is None or
+        if(code!=0 or row['prefill_tokens']!=2047 or row['ttft_ms'] is None or row['decode_toks_per_s'] is None or
            not raw_logits.is_file() or row['qpn_plan_groups']==0 or
            (mode!="mmq" and row['qpn_groups']==0) or
            (mode=="mmq" and row['qpn_groups']!=0)):
             summary['status']='failed_execution_or_unexercised_kernel'
             persist()
             return 2
+    if a.packed_cache:
+        summary['within_arm_comparisons']=[]
+        for i,j in ((0,3),(1,2)):
+            x=logits(private/f"{i}-{modes[i]}.logits.f32")
+            y=logits(private/f"{j}-{modes[j]}.logits.f32")
+            check={k:v for k,v in diff(x,y).items() if k not in ('argmax_base','argmax_candidate')}
+            check.update(mode=modes[i],bitwise_equal=x.tobytes()==y.tobytes())
+            summary['within_arm_comparisons'].append(check)
+        if not all(r['bitwise_equal'] for r in summary['within_arm_comparisons']):
+            summary['status']='failed_within_arm_repeatability';persist();return 3
     for bi,qi in ((0,1),(3,2)):
         b=summary["runs"][bi]
         q=summary["runs"][qi]
         metrics=diff(logits(private/f"{bi}-{modes[bi]}.logits.f32"),
                      logits(private/f"{qi}-{modes[qi]}.logits.f32"))
+        metrics={k:v for k,v in metrics.items() if k not in ("argmax_base","argmax_candidate")}
         metrics.update({"control_index":bi,"candidate_index":qi,
                         "control_mode":modes[bi],"candidate_mode":modes[qi],
                         "control_ttft_ms":b["ttft_ms"],"candidate_ttft_ms":q["ttft_ms"],

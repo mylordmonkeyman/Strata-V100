@@ -8,6 +8,7 @@
 #include "mmq_resident_sort.hpp"
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
 #include "strata/prefill/qpn_experiment_policy.hpp"
+#include "strata/core/expert_source.hpp"
 #include "strata/kernels/nvfp4_volta_qpn.hpp"
 #include "ggml.h"  // GGML_TYPE_NVFP4; only under the opt-in build gate
 #endif
@@ -954,8 +955,12 @@ struct QpnPrefillScratch {
         if (by) cudaFree(by);
         x=h=bx=bh=nullptr;gate=up=gu=bgu=by=nullptr;
     }
-    bool allocate(bool batched) {
-        constexpr std::size_t t=32, n=2560, ff=640;
+    int max_rows=0;
+    bool allocate(bool batched, int requested_rows=32) {
+        if(requested_rows<1 || requested_rows>512 || (batched && requested_rows!=32)) return false;
+        max_rows=requested_rows;
+        const std::size_t t=(std::size_t)requested_rows;
+        constexpr std::size_t n=2560, ff=640;
         if (cudaMalloc(reinterpret_cast<void**>(&x), t*n*2)!=cudaSuccess ||
             cudaMalloc(reinterpret_cast<void**>(&h), t*ff*2)!=cudaSuccess ||
             cudaMalloc(reinterpret_cast<void**>(&gate),t*ff*4)!=cudaSuccess ||
@@ -1038,6 +1043,7 @@ struct Prefill::Impl {
     std::unique_ptr<mmq::Context> mmq_ctx;
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
     std::unique_ptr<QpnPrefillScratch> qpn_scratch;
+    std::unique_ptr<core::FileExpertSource> qpn_packed_source;
 #endif
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
     // set_cpu_pool: a small chunk's CPU experts. The layer's MoE input (T x N, from `mixed`), the rows the pool writes
@@ -4356,6 +4362,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // the experts, in id order: resident ones from VRAM, the others through the staging ring
                         std::vector<int32_t> order, order_peer;
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                        bool qpn_packed=false; int qpn_low=17,qpn_high=32;
+                        std::vector<uint8_t> qpn_eligible,qpn_packed_owned;
                         bool qpn_layer = false;  // declared outside compact_l/else for the later compute lambda
                         bool qpn_fused_gu = false;  // shared with later group-compute lambda
                         bool qpn_batched = false;   // explicit third opt-in; never default
@@ -4405,6 +4413,33 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             return false;
                         }
                         qpn_batched=qpn_fused_gu && batch_requested;
+                        const char* packed_dir=std::getenv("STRATA_QPN_PREFILL_PACKED_DIR");
+                        qpn_packed=packed_dir && packed_dir[0];
+                        if(qpn_packed && (qpn_execute || qpn_plan_only)) {
+                            cudaStreamCaptureStatus capture=cudaStreamCaptureStatusNone;
+                            if(cudaStreamIsCapturing(m.cs,&capture)!=cudaSuccess || capture!=cudaStreamCaptureStatusNone) {
+                                err="experimental packed QPN model prefill does not support graph capture yet";return false;
+                            }
+                            const char *lo=std::getenv("STRATA_QPN_PREFILL_MIN_ROWS"),
+                                       *hi=std::getenv("STRATA_QPN_PREFILL_MAX_ROWS");
+                            qpn_low=lo?std::atoi(lo):17;qpn_high=hi?std::atoi(hi):32;
+                            if(qpn_low<1 || qpn_high<qpn_low || qpn_high>512 || batch_requested ||
+                               stream_all || m.pp || next_ || !lay.native || !detail::qpn_opt_in(std::getenv("STRATA_QPN_PREFILL_FUSED_GU"))) {
+                                err="experimental packed QPN requires staged single-GPU fused per-expert dispatch";
+                                return false;
+                            }
+                            if(!m.qpn_packed_source) {
+                                auto source=std::make_unique<core::FileExpertSource>();
+                                if(!source->open(packed_dir,m.g->n_layers,m.g->n_expert,err))return false;
+                                m.qpn_packed_source=std::move(source);
+                            }
+                            qpn_eligible.assign((size_t)m.g->n_expert,1);
+                            qpn_packed_owned.assign((size_t)m.g->n_expert,0);
+                            // Original resident cache slots remain canonical for every consumer.
+                            for(int32_t e=0;e<m.g->n_expert;e++)
+                                if(m.host_res && m.cache && m.host_res[(size_t)l*m.g->n_expert+e]>=0)
+                                    qpn_eligible[(size_t)e]=0;
+                        }
                         // Explicit matched-order MMQ control partitions routes but
                         // never invokes QPN. Both knobs are off by default.
                         if ((qpn_execute || qpn_plan_only) &&
@@ -4430,13 +4465,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             try {
                                 qpn_planned=detail::qpn_partition_rows(
                                     ids_h,(size_t)(T*K),(int32_t)K,m.cnt,m.off,
-                                    order,slot_h,src_h,MMQ_GROUP);
+                                    order,slot_h,src_h,MMQ_GROUP,qpn_low,qpn_high,qpn_packed?&qpn_eligible:nullptr);
                             } catch(const std::exception& ex) {
                                 err=std::string("experimental QPN routing invariant: ")+ex.what();
                                 return false;
                             }
                             qpn_layer=qpn_planned && qpn_execute;
-                            if(qpn_layer && !m.qpn_scratch) {
+                            if((qpn_layer || (qpn_planned && qpn_packed)) && !m.qpn_scratch) {
                                 cudaStreamCaptureStatus capturing=cudaStreamCaptureStatusNone;
                                 if (cudaStreamIsCapturing(m.cs,&capturing)!=cudaSuccess ||
                                     capturing!=cudaStreamCaptureStatusNone) {
@@ -4444,7 +4479,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     return false;
                                 }
                                 auto scratch=std::make_unique<QpnPrefillScratch>();
-                                if(!scratch->allocate(qpn_batched)) {
+                                if(!scratch->allocate(qpn_batched,qpn_packed?qpn_high:32)) {
                                     err="experimental QPN scratch allocation failed (no fallback after changing route ownership)";
                                     return false;
                                 }
@@ -4454,14 +4489,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 int selected_groups=0,selected_experts=0;
                                 for(std::size_t j=0;j<order.size();j+=MMQ_GROUP) {
                                     const std::size_t end=std::min(order.size(),j+(std::size_t)MMQ_GROUP);
-                                    if(detail::qpn_entire_group(order,j,end,m.cnt)) {
+                                    if(detail::qpn_entire_group(order,j,end,m.cnt,qpn_low,qpn_high,qpn_packed?&qpn_eligible:nullptr)) {
                                         ++selected_groups;
                                         selected_experts+=(int)(end-j);
+                                        if(qpn_layer && qpn_packed)
+                                            for(size_t k=j;k<end;k++)qpn_packed_owned[(size_t)order[k]]=1;
                                     }
                                 }
                                 std::fprintf(stderr,
-                                    "strata qpn-plan: layer %lld staged groups=%d experts=%d execute=%d route rows=17..32\n",
-                                    (long long)l,selected_groups,selected_experts,(int)qpn_layer);
+                                    "strata qpn-plan: layer %lld staged groups=%d experts=%d execute=%d route rows=%d..%d packed=%d\n",
+                                    (long long)l,selected_groups,selected_experts,(int)qpn_layer,qpn_low,qpn_high,(int)qpn_packed);
                             }
                         }
 #endif
@@ -5012,6 +5049,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                                if(qpn_packed && !qpn_packed_owned.empty() && qpn_packed_owned[(size_t)e]) {
+                                    const uint8_t* packed=m.qpn_packed_source->blob_stable(l,e);
+                                    if(!packed){err="experimental packed QPN source has no blob";return false;}
+                                    job_of[j]=(int)js.size();
+                                    js.push_back({packed,(size_t)lay.blob_bytes(l)});
+                                    continue;
+                                }
+#endif
                                 if (m.src->pinned(l, e)) continue;
                                 job_of[j] = (int) js.size();
                                 if (m.src->transient(l, e)) {   // CS-T: copied by the source
@@ -5032,7 +5078,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const int sl = stage_next;
                             stage_next = (stage_next + 1) % stage_n;
                             const auto th = Clock::now();
-                            const bool pinned = m.src->pinned(l, e);   // pinned: never transient
+                            bool packed_entry=false;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+                            packed_entry=qpn_packed && !qpn_packed_owned.empty() && qpn_packed_owned[(size_t)e];
+#endif
+                            const bool pinned = !packed_entry && m.src->pinned(l, e);   // packed uses the same pinned stager
                             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
                             if (pinned) {
@@ -5316,7 +5366,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
                                 if (qpn_layer &&
-                                    detail::qpn_entire_group(order,j0,j+ngx,m.cnt)) {
+                                    detail::qpn_entire_group(order,j0,j+ngx,m.cnt,qpn_low,qpn_high,qpn_packed?&qpn_eligible:nullptr)) {
                                     // All experts in this MMQ group have real 17..32-row
                                     // activation spans. The preceding exact group gather
                                     // copied immutable GGUF NVFP4 blocks and tail scales.
@@ -5341,7 +5391,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         for (int i=0;i<ngx;i++) {
                                             const int64_t first=m.bounds_host[j0+(size_t)i];
                                             const int32_t rows=m.cnt[(size_t)order[j0+(size_t)i]];
-                                            if(rows<17 || rows>32 || first<0 ||
+                                            if(rows<qpn_low || rows>qpn_high || rows>qs.max_rows || first<0 ||
                                                first+rows>T*K ||
                                                m.bounds_host[j0+(size_t)i+1]-first!=rows) {
                                                 err="experimental QPN group row bounds inconsistent";
@@ -5383,7 +5433,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                 const auto* wd=m.grp_d+(size_t)i*mmq_db;
                                                 const float* scales=m.grp_tail+(size_t)i*4;
                                                 gather_rows16(m.mixed_h,m.src_dev+first,qs.x,rows,N,m.cs);
-                                                if (qpn_fused_gu) {
+                                                const strata::kernels::qpn::Schedule per_schedule{4,1,1,rows<=8?8:16};
+                                                if(qpn_packed) {
+                                                    strata::kernels::qpn::projection_chunkmajor_batch(
+                                                        wgu,0,qs.x,qs.gu,1,1280,(int)N,rows,per_schedule,m.cs);
+                                                    strata::kernels::qpn::swiglu_stage_half(
+                                                        qs.gu,scales,qs.h,rows,640,m.cs);
+                                                } else if (qpn_fused_gu) {
                                                     strata::kernels::qpn::projection(
                                                         wgu,qs.x,qs.gu,1280,(int)N,rows,schedule,m.cs);
                                                     strata::kernels::qpn::swiglu_stage_half(
@@ -5398,7 +5454,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                     strata::kernels::qpn::stage_f32(
                                                         m.H+first*640,qs.h,(size_t)rows*640,m.cs);
                                                 }
-                                                strata::kernels::qpn::projection(
+                                                if(qpn_packed)
+                                                    strata::kernels::qpn::projection_chunkmajor_batch(
+                                                        wd,0,qs.h,m.Dm+first*N,1,(int)N,640,rows,per_schedule,m.cs);
+                                                else strata::kernels::qpn::projection(
                                                     wd,qs.h,m.Dm+first*N,(int)N,640,rows,schedule,m.cs);
                                             }
                                         }

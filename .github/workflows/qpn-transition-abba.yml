@@ -1,12 +1,5 @@
 name: QPN selective MMQ supply ABBA V100
 on:
-  push:
-    branches: ['qpn/prepacked-stream']
-    paths:
-      - 'src/prefill/prefill.cpp'
-      - 'tools/qpn_transition_abba.py'
-      - 'tools/test_qpn_transition_abba.py'
-      - '.github/workflows/qpn-transition-abba.yml'
   workflow_dispatch:
 permissions:
   contents: read

@@ -50,7 +50,7 @@ def rearrange(blocks: bytes, rows: int, cols: int, inverse: bool = False) -> byt
     return bytes(result)
 
 
-def transform_expert(data: bytes, n: int, ff: int, inverse: bool = False) -> bytes:
+def transform_expert(data: bytes, n: int, ff: int, inverse: bool = False, fast: bool = False) -> bytes:
     matrix = projection_bytes(ff, n)
     if matrix != projection_bytes(n, ff):
         raise ValueError("inconsistent weight matrix sizes")
@@ -60,6 +60,14 @@ def transform_expert(data: bytes, n: int, ff: int, inverse: bool = False) -> byt
     scales = struct.unpack("<4f", tail)
     if not all(math.isfinite(s) and s > 0 for s in scales[:3]) or scales[3] != 0:
         raise ValueError("noncanonical expert tail")
+    if fast:
+        import numpy as np
+        def transpose(raw, rows, cols):
+            blocks=cols//64
+            shape=(blocks,rows,BLOCK) if inverse else (rows,blocks,BLOCK)
+            return np.frombuffer(raw,dtype=np.uint8).reshape(shape).transpose(1,0,2).tobytes()
+        return (transpose(data[:2*matrix],2*ff,n) +
+                transpose(data[2*matrix:3*matrix],n,ff) + tail)
     # A contiguous, combined GU projection (all gate rows, then all up
     # rows), then an independent down projection and unmodified tail.
     return (
@@ -86,7 +94,7 @@ def _temp_path(parent: Path, name: str) -> Path:
 
 def convert(source: Path, output: Path, manifest: Path,
             n: int, ff: int, expected_hash: str | None,
-            expert_count: int | None, overwrite: bool) -> dict:
+            expert_count: int | None, overwrite: bool, fast: bool = False) -> dict:
     source, output, manifest = source.resolve(), output.resolve(), manifest.resolve()
     if len({source, output, manifest}) != 3:
         raise ValueError("source/output/manifest must be distinct")
@@ -117,8 +125,8 @@ def convert(source: Path, output: Path, manifest: Path,
                 original = src.read(size)
                 if len(original) != size:
                     raise ValueError("truncated expert blob")
-                packed = transform_expert(original, n, ff)
-                if transform_expert(packed, n, ff, True) != original:
+                packed = transform_expert(original, n, ff, fast=fast)
+                if transform_expert(packed, n, ff, True, fast=fast) != original:
                     raise ValueError(f"block-level round-trip failed for expert {i}")
                 dst.write(packed)
                 h.update(packed)
@@ -211,6 +219,7 @@ def main() -> None:
     p.add_argument("--expected-sha256")
     p.add_argument("--experts", type=int)
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--numpy", action="store_true", help="same lossless layout using bounded-memory vectorized transposes")
     args = p.parse_args()
     if args.self_test:
         self_test()
@@ -218,7 +227,7 @@ def main() -> None:
     if not all((args.source, args.output, args.manifest)):
         p.error("--source, --output and --manifest required unless --self-test")
     meta = convert(args.source, args.output, args.manifest, args.n, args.ff,
-                   args.expected_sha256, args.experts, args.overwrite)
+                   args.expected_sha256, args.experts, args.overwrite, fast=args.numpy)
     # Print metadata only. Never output weight values or private file contents.
     print(json.dumps(meta, sort_keys=True))
 

@@ -67,5 +67,22 @@ int main(){
         catch(const std::invalid_argument&){rejected=true;}
         assert(rejected);
     }
+    {
+        // Packed eligibility must exclude canonical resident slots while preserving every route.
+        std::vector<int32_t> c(32,64),order(32),off(33),ids,slot(32*64),src(32*64);
+        std::vector<uint8_t> eligible(32,1);
+        for(int e=0;e<32;e++) { order[e]=e;off[e]=e*64;if(e<16)eligible[e]=0;
+            for(int r=0;r<64;r++)ids.push_back(e); }
+        off[32]=32*64;
+        assert(d::qpn_partition_rows(ids.data(),ids.size(),10,c,off,order,slot.data(),src.data(),16,33,512,&eligible));
+        assert(!d::qpn_entire_group(order,0,16,c,33,512,&eligible));
+        assert(d::qpn_entire_group(order,16,32,c,33,512,&eligible));
+        std::vector<uint8_t> seen(ids.size(),0);
+        for(size_t i=0;i<ids.size();i++) { assert(!seen[slot[i]]++);assert(src[slot[i]]==int32_t(i/10)); }
+        for(auto v:seen)assert(v==1);
+        eligible.pop_back();bool rejected=false;
+        try{ d::qpn_partition_rows(ids.data(),ids.size(),10,c,off,order,slot.data(),src.data(),16,33,512,&eligible); }
+        catch(const std::invalid_argument&){rejected=true;}assert(rejected);
+    }
     std::puts("QPN full-model opt-in policy ownership/eligibility PASS");
 }
