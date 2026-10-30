@@ -124,10 +124,12 @@ def main():
                    help='isolate grouped-gather per-slot ready/reuse event dependencies with tracing disabled')
     p.add_argument('--gather-kernel-repeat', action='store_true',
                    help='isolate batched native gather kernel from stream-all grouped slot protocol')
+    p.add_argument('--gather-chunk-repeat', action='store_true',
+                   help='separate stream-all and staged chunk grouped gather, including same-binary controls')
     p.add_argument('--layer-repeat', action='store_true',
                    help='repeat stream-all using existing private per-layer captures to locate divergence')
     a = p.parse_args()
-    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat, a.gather_repeat, a.gather_sync_repeat, a.gather_mode_repeat, a.gather_event_repeat, a.gather_kernel_repeat)) > 1:
+    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat, a.gather_repeat, a.gather_sync_repeat, a.gather_mode_repeat, a.gather_event_repeat, a.gather_kernel_repeat, a.gather_chunk_repeat)) > 1:
         raise ValueError('diagnostic modes are mutually exclusive')
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -194,6 +196,10 @@ def main():
     if a.gather_kernel_repeat:
         experiments = [(1024, 'stream-all-grouped-serial-gather', '1', '1024', ((False, 'off-a'), (False, 'off-b')))]
         summary['scope'] = 'MMQ stream-all grouped ownership with serial native gather fallback; no speed or QPN claim'
+    if a.gather_chunk_repeat:
+        experiments = [(1024, name, '1', '1024', ((False, 'off-a'), (False, 'off-b'))) for name in (
+            'grouped-stream-only', 'grouped-staged-only', 'grouped-both-off', 'grouped-both-on')]
+        summary['scope'] = 'MMQ grouped gather chunk-specific opt-in controls and same-binary baselines; no QPN or speed claim'
     summary['restored_nan_recipe'] = True
     summary['workaround_repeat_diagnostic'] = a.workaround_repeat
     summary['gather_repeat_diagnostic'] = a.gather_repeat
@@ -201,6 +207,7 @@ def main():
     summary['gather_mode_repeat_diagnostic'] = a.gather_mode_repeat
     summary['gather_event_repeat_diagnostic'] = a.gather_event_repeat
     summary['gather_kernel_repeat_diagnostic'] = a.gather_kernel_repeat
+    summary['gather_chunk_repeat_diagnostic'] = a.gather_chunk_repeat
     summary['repeatability_diagnostic'] = a.repeatability
     summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
@@ -226,6 +233,10 @@ def main():
             if a.gather_kernel_repeat:
                 env['STRATA_PREFILL_GROUP_GATHER'] = '1'
                 env['STRATA_QPN_DIAG_GG_SERIAL_GATHER'] = '1'
+            if a.gather_chunk_repeat:
+                env['STRATA_PREFILL_GROUP_GATHER'] = '1'
+                env['STRATA_QPN_DIAG_GG_DISABLE_STREAM'] = str(int(experiment in ('grouped-staged-only', 'grouped-both-off')))
+                env['STRATA_QPN_DIAG_GG_DISABLE_STAGED'] = str(int(experiment in ('grouped-stream-only', 'grouped-both-off')))
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             if a.layer_repeat:
@@ -248,11 +259,13 @@ def main():
                 except subprocess.TimeoutExpired:
                     code = 124
             row = dict(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min, variant=variant,
-                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat) else 'default',
+                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat) else 'default',
                        step_sync=bool(a.gather_sync_repeat),
                        ready_wait_each=env.get('STRATA_QPN_DIAG_GG_WAIT_EACH') == '1',
                        release_each=env.get('STRATA_QPN_DIAG_GG_RELEASE_EACH') == '1',
                        serial_gather=env.get('STRATA_QPN_DIAG_GG_SERIAL_GATHER') == '1',
+                       disable_stream_gather=env.get('STRATA_QPN_DIAG_GG_DISABLE_STREAM') == '1',
+                       disable_staged_gather=env.get('STRATA_QPN_DIAG_GG_DISABLE_STAGED') == '1',
                        trace=trace, returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
@@ -278,11 +291,13 @@ def main():
             save()
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
         metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min,
-                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat) else 'default',
+                       group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat) else 'default',
                        step_sync=bool(a.gather_sync_repeat),
                        ready_wait_each='wait-each' in experiment or 'both-each' in experiment,
                        release_each='release-each' in experiment or 'both-each' in experiment,
-                       serial_gather=bool(a.gather_kernel_repeat))
+                       serial_gather=bool(a.gather_kernel_repeat),
+                       disable_stream_gather=experiment in ('grouped-staged-only', 'grouped-both-off'),
+                       disable_staged_gather=experiment in ('grouped-stream-only', 'grouped-both-off'))
         if a.layer_repeat:
             from qpn_layer_compare import compare_features, compare_residuals, compare_boundaries
             try:
@@ -302,12 +317,13 @@ def main():
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
-            if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat or a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat):
+            if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat or a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = ('grouped_serial_gather_repeat_passed_prior_failure_unresolved' if a.gather_kernel_repeat
+    summary['status'] = ('grouped_chunk_isolation_repeat_passed_prior_failure_unresolved' if a.gather_chunk_repeat
+                         else 'grouped_serial_gather_repeat_passed_prior_failure_unresolved' if a.gather_kernel_repeat
                          else 'grouped_per_slot_event_repeat_passed_prior_failure_unresolved' if a.gather_event_repeat
                          else 'grouped_staged_and_stream_all_repeat_passed_prior_failure_unresolved' if a.gather_mode_repeat
                          else 'grouped_step_sync_repeat_passed_prior_failure_unresolved' if a.gather_sync_repeat
