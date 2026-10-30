@@ -1,0 +1,52 @@
+name: QPN pinned prepacked NVFP4 streaming versus MMQ on V100
+on:
+  push:
+    branches: ['qpn/prepacked-stream']
+    paths:
+      - 'src/kernels/nvfp4_volta_mixed_bench.cpp'
+      - 'tools/qpn_prepacked_stream_gpu_ci.sh'
+      - '.github/workflows/qpn-prepacked-stream-real.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  stream-real:
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 120
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '16'
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_MIXED_FIXTURE_DIR: /srv/strata-qpn/mixed-gpu-fixtures/40908922475-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40908922475
+          name: qpn-mixed-fixture-40908922475-1
+          path: pinned-mixed-summary
+      - name: Test persistent pinned host NVFP4 pack with equal transfer bytes
+        shell: bash
+        run: bash tools/qpn_prepacked_stream_gpu_ci.sh
+      - name: Publish aggregate numbers and sanitizer diagnostics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-prepacked-stream-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qpn-prepacked-stream-results/provenance.json
+            qpn-prepacked-stream-results/measurement-min129.json
+            qpn-prepacked-stream-results/memcheck-measurement-min129.json
+            qpn-prepacked-stream-results/racecheck-measurement-min129.json
+            qpn-prepacked-stream-results/memcheck-min129.log
+            qpn-prepacked-stream-results/racecheck-min129.log
+            qpn-prepacked-stream-results/processes-before.txt
+          if-no-files-found: warn
+          retention-days: 14
