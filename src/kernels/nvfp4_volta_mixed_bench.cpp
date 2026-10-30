@@ -33,6 +33,15 @@ struct Dev {
     template<class T>T* as() const{return static_cast<T*>(p);}
     void put(const void* src,size_t bytes){ck(cudaMemcpy(p,src,bytes,cudaMemcpyHostToDevice));}
 };
+// Persistent page-locked host layouts: the DMA source never changes during
+// captured graph replay. No worker, driver, or host memlock settings changed.
+struct Pinned {
+    void* p=nullptr;
+    explicit Pinned(std::size_t bytes){ck(cudaHostAlloc(&p,bytes,cudaHostAllocDefault));}
+    ~Pinned(){if(p)cudaFreeHost(p);}
+    Pinned(const Pinned&)=delete;Pinned& operator=(const Pinned&)=delete;
+    template<class T>T* as() const{return static_cast<T*>(p);}
+};
 struct Stream {cudaStream_t s{};Stream(){ck(cudaStreamCreate(&s));}~Stream(){cudaStreamDestroy(s);}};
 struct Graph {cudaGraph_t g{};cudaGraphExec_t exec{};~Graph(){if(exec)cudaGraphExecDestroy(exec);if(g)cudaGraphDestroy(g);}};
 struct Events {cudaEvent_t a{},b{};Events(){ck(cudaEventCreate(&a));ck(cudaEventCreate(&b));}~Events(){cudaEventDestroy(a);cudaEventDestroy(b);}};
@@ -139,12 +148,13 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false;
+    std::string wp,xp,cp;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
         if(flag=="--qpn-fused-gu"){fused_gu=true;continue;}
         if(flag=="--qpn-chunkmajor"){chunkmajor=true;continue;}
+        if(flag=="--qpn-pinned-stream"){pinned_stream=true;continue;}
         if(++i>=argc)throw std::invalid_argument("missing value");
         const std::string val=argv[i];
         if(flag=="--weights")wp=val;
@@ -162,7 +172,8 @@ int main(int argc,char** argv)try{
        (qpn_min==129&&qpn_max!=512) ||
        ((qpn_min==1||qpn_min==17)&&qpn_max!=128) ||
        (fused_gu && (qpn_min!=129 || qpn_max!=512)) ||
-       (chunkmajor && !fused_gu))
+       (chunkmajor && !fused_gu) ||
+       (pinned_stream && (!chunkmajor||qpn_min!=129||qpn_max!=512)))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
@@ -239,6 +250,7 @@ int main(int argc,char** argv)try{
     // measured and cannot be ignored in model integration decisions.
     double weight_pack_cpu_us=0,weight_pack_upload_us=0;
     std::unique_ptr<Dev> packed_w;
+    std::unique_ptr<Pinned> pinned_canonical,pinned_qpn;
     if(chunkmajor) {
         const auto begin=std::chrono::steady_clock::now();
         std::vector<uint8_t> reordered_w=host_w;
@@ -257,10 +269,28 @@ int main(int argc,char** argv)try{
         }
         const auto packed=std::chrono::steady_clock::now();
         packed_w=std::make_unique<Dev>(host_w.size());
-        packed_w->put(reordered_w.data(),reordered_w.size());
-        const auto uploaded=std::chrono::steady_clock::now();
-        weight_pack_cpu_us=std::chrono::duration<double,std::micro>(packed-begin).count();
-        weight_pack_upload_us=std::chrono::duration<double,std::micro>(uploaded-packed).count();
+        if(pinned_stream) {
+            // Exact selected 2*STRIDE compressed expert blobs only, packed
+            // ONCE in persistent host memory. The canonical MMQ prefix is
+            // transferred separately. Never stage/transmit the unused packed
+            // 14 experts. No conversion in the timed forward pass.
+            const std::size_t selected=std::size_t(E-fallback_groups)*STRIDE;
+            pinned_qpn=std::make_unique<Pinned>(selected);
+            std::memcpy(pinned_qpn->p,
+                reordered_w.data()+std::size_t(fallback_groups)*STRIDE,selected);
+            const auto prepared=std::chrono::steady_clock::now();
+            weight_pack_cpu_us=std::chrono::duration<double,std::micro>(prepared-begin).count();
+            weight_pack_upload_us=0;
+        } else {
+            packed_w->put(reordered_w.data(),reordered_w.size());
+            const auto uploaded=std::chrono::steady_clock::now();
+            weight_pack_cpu_us=std::chrono::duration<double,std::micro>(packed-begin).count();
+            weight_pack_upload_us=std::chrono::duration<double,std::micro>(uploaded-packed).count();
+        }
+    }
+    if(pinned_stream) {
+        pinned_canonical=std::make_unique<Pinned>(host_w.size());
+        std::memcpy(pinned_canonical->p,host_w.data(),host_w.size());
     }
     Dev w(host_w.size()),input(host_x.size()),tail(scales.size()*4);
     Dev b(bounds.size()*4),ids(size_t(rows+512)*4),xh(size_t(rows)*N*2);
@@ -299,8 +329,27 @@ int main(int argc,char** argv)try{
         m::scale_down_rows(y.as<float>(),N,b.as<int32_t>(),n,tail.as<float>(),active_rows,s);
     };
     const size_t out_bytes=size_t(rows)*N*4;
-    auto all=[&](){ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(E);mmq(E,rows);};
+    const std::size_t canonical_h2d=std::size_t(E)*STRIDE;
+    const std::size_t fallback_h2d=std::size_t(fallback_groups)*STRIDE;
+    const std::size_t packed_h2d=std::size_t(E-fallback_groups)*STRIDE;
+    // Copy from persistent pinned memory directly into the pre-existing CUDA
+    // slots on the SAME stream as gather/compute, so each iteration's event
+    // includes the actual PCIe transfer and the graph captures real HtoD nodes.
+    // All-MMQ transfers E canonical compressed blobs. Hybrid transfers exactly
+    // fallback_groups canonical blobs plus selected QPN packed blobs: identical
+    // compressed bytes, without a GPU layout conversion.
+    auto stream_weights=[&](bool hybrid){
+        if(!pinned_stream)return;
+        ck(cudaMemcpyAsync(w.p,pinned_canonical->p,
+            hybrid?fallback_h2d:canonical_h2d,cudaMemcpyHostToDevice,s));
+        if(hybrid)
+            ck(cudaMemcpyAsync(packed_w->as<uint8_t>()+fallback_h2d,
+                               pinned_qpn->p,packed_h2d,
+                               cudaMemcpyHostToDevice,s));
+    };
+    auto all=[&](){stream_weights(false);ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(E);mmq(E,rows);};
     auto mix=[&](){
+        stream_weights(true);
         ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(fallback_groups);mmq(fallback_groups,fallback_rows);
         q::stage_f32(input.as<float>()+size_t(fallback_rows)*N,xh.as<uint16_t>()+size_t(fallback_rows)*N,
                      size_t(small)*N,s);
@@ -427,8 +476,8 @@ int main(int argc,char** argv)try{
         check_canary();
     }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
-    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"routed_rows\":%d,",
-                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",weight_pack_cpu_us,weight_pack_upload_us,rows);
+    std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"pinned_stream\":%s,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"control_h2d_bytes\":%zu,\"hybrid_h2d_bytes\":%zu,\"routed_rows\":%d,",
+                fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",pinned_stream?"true":"false",weight_pack_cpu_us,weight_pack_upload_us,pinned_stream?canonical_h2d:0,pinned_stream?fallback_h2d+packed_h2d:0,rows);
     std::printf("\"weights_bytes\":%zu,\"l2_bytes\":%d,\"weights_exceed_l2\":%s,",
                 host_w.size(),prop.l2CacheSize,host_w.size()>size_t(prop.l2CacheSize)?"true":"false");
     std::printf("\"mixed_vs_mmq_output_l2\":%.9g,\"mmq_reference_l2\":%.9g,\"mixed_reference_l2\":%.9g,\"oracle_rows\":%zu,\"numerics_pass\":true,",
