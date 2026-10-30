@@ -211,6 +211,7 @@ def main():
     summary['repeatability_diagnostic'] = a.repeatability
     summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
+    stable_chunk_outputs = {}  # private in-process arrays; only scalar comparisons are uploaded
     for prefill, experiment, issuer, stream_min, variants in experiments:
         pair = []
         capture_paths = []
@@ -289,6 +290,8 @@ def main():
                 row['trace_chunks'] = len(traces)
             print(f'MMQ supply diagnostic prefill={prefill} trace={trace} completed', flush=True)
             save()
+        if a.gather_chunk_repeat and experiment in ('grouped-stream-only', 'grouped-both-off'):
+            stable_chunk_outputs[experiment] = pair
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
         metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min,
                        group_gather='0' if a.gather_repeat else '1' if (a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat) else 'default',
@@ -319,6 +322,25 @@ def main():
             parity_failed = True
             if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat or a.gather_sync_repeat or a.gather_mode_repeat or a.gather_event_repeat or a.gather_kernel_repeat or a.gather_chunk_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
+        save()
+    if a.gather_chunk_repeat:
+        # Compare the two individually repeatable configurations against each
+        # other, not merely each against itself. Do not export any raw logits.
+        reference = stable_chunk_outputs.get('grouped-both-off')
+        candidate = stable_chunk_outputs.get('grouped-stream-only')
+        if reference is None or candidate is None or len(reference) != 2 or len(candidate) != 2:
+            summary['status'] = 'failed_missing_cross_arm_reference'; save(); return 3
+        summary['cross_arm_comparisons'] = []
+        for i in range(2):
+            d = {k:v for k,v in diff(reference[i], candidate[i]).items()
+                 if k not in ('argmax_base', 'argmax_candidate')}
+            d.update(reference='grouped-both-off', candidate='grouped-stream-only',
+                     variant=('off-a', 'off-b')[i],
+                     bitwise_equal=(reference[i] == candidate[i]))
+            summary['cross_arm_comparisons'].append(d)
+        summary['cross_arm_numerical_quality_qualified'] = False
+        summary['limitations'].append(
+            'cross-arm comparison is a within-model MMQ control, not an independent GGUF FP64 oracle')
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
