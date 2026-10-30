@@ -73,6 +73,11 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #if defined(STRATA_GPU_METAL)
 // The Metal backend's decode window (metal/src/engine/window.cpp): this file's init/run/commit hand over to it.
@@ -595,6 +600,10 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+    if (r1_verify_file_) std::fclose(r1_verify_file_);
+    if (r1_verify_host_) cudaFreeHost(r1_verify_host_);
+#endif
     for (auto& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     for (auto& e : exec_nr_)
@@ -716,6 +725,33 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+    // Verification routes live in ids_ on the GPU. The ordinary doorbell h_ids_
+    // may contain only CPU-miss IDs, and is NOT a complete route trace.
+    // This read-only experiment captures every layer's GPU IDs into preallocated
+    // pinned memory INSIDE the graph, then counts them only after its existing
+    // end-of-window sync. No per-layer host synchronization or QPN dispatch.
+    if (const char* private_path = std::getenv("STRATA_QPN_R1_PRIVATE_VERIFY_CAPTURE");
+        private_path && *private_path) {
+        if (private_path[0] != '/' || lb_ != 0 || le_ != 48 || g.n_layers != 48 ||
+            g.n_expert != 512 || ss.k != 10 || next_ != nullptr) {
+            err = "private R1 verify capture requires a single complete 48-layer 512x10 stage and absolute path";
+            return false;
+        }
+        const int fd = ::open(private_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd < 0) { err = "private R1 verify capture file cannot be created safely"; return false; }
+        struct stat st{};
+        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || ::fchmod(fd, 0600) != 0) {
+            ::close(fd); err = "private R1 verify capture file is unsafe"; return false;
+        }
+        r1_verify_file_ = ::fdopen(fd, "wb");
+        if (!r1_verify_file_) { ::close(fd); err = "private R1 verify capture file open failed"; return false; }
+        const size_t words = (size_t) 48 * (size_t) max_t * (size_t) ss.k;
+        if (cudaHostAlloc((void**) &r1_verify_host_, words * sizeof(int32_t), cudaHostAllocDefault) != cudaSuccess) {
+            err = "private R1 verify capture pinned buffer allocation failed"; return false;
+        }
+    }
+#endif
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
@@ -1906,6 +1942,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       rr_stats_ != nullptr ? rr_stats_ + (n <= 8 ? 4 : 0) : nullptr, cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+        // CUDA-graph-compatible D2H snapshot after final router changes, before
+        // ids_ is reused by the next layer. Pinned destination is disjoint by
+        // layer and token group. Never use h_ids_ (the CPU-miss doorbell).
+        if (r1_verify_host_ != nullptr && !batch_rec_) {
+            const size_t offset = ((size_t) (l - lb_) * (size_t) max_t_ + (size_t) tb) * (size_t) K;
+            if (cudaMemcpyAsync(r1_verify_host_ + offset, ids_ + tb * K,
+                                (size_t) n * (size_t) K * sizeof(int32_t),
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+                err = "private R1 verify route snapshot graph node failed";
+                return false;
+            }
+        }
+#endif
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
@@ -2312,6 +2362,47 @@ void Verifier::refresh_ar() {
                          : "are 100% VRAM resident again: the zero-doorbell graph");
     }
 }
+
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+bool Verifier::r1_verify_record(int T, int64_t pos0, std::string& err) {
+    // Bounded to the first 32 genuine Verifier::run windows; batch, pipeline,
+    // prompt-tail and autoregressive phases are NOT inferred or relabeled.
+    if (!r1_verify_file_ || r1_verify_windows_ >= 32) return true;
+    if (!r1_verify_host_ || T < 1 || T > max_t_ || pos0 < 0) {
+        err = "private R1 verify capture geometry invalid"; return false;
+    }
+    constexpr int32_t experts = 512, top_k = 10, flags = 0;
+    constexpr uint32_t version = 1;
+    constexpr char magic[4] = {'Q', 'D', 'V', '1'};
+    auto put = [&](const void* data, size_t elem_size, size_t count) {
+        return std::fwrite(data, elem_size, count, r1_verify_file_) == count;
+    };
+    for (int32_t layer = 0; layer < 48; ++layer) {
+        int32_t counts[experts] = {};
+        const int32_t* ids = r1_verify_host_ + (size_t) layer * (size_t) max_t_ * top_k;
+        for (int i = 0; i < T * top_k; ++i) {
+            const int32_t id = ids[i];
+            if (id < 0 || id >= experts) {
+                err = "private R1 verify capture contains invalid router ID"; return false;
+            }
+            ++counts[id];
+        }
+        const int64_t tokens = T;
+        if (!put(magic, 1, 4) || !put(&version, 4, 1) ||
+            !put(&pos0, 8, 1) || !put(&tokens, 8, 1) ||
+            !put(&layer, 4, 1) || !put(&experts, 4, 1) ||
+            !put(&top_k, 4, 1) || !put(&flags, 4, 1) ||
+            !put(counts, sizeof(int32_t), experts)) {
+            err = "private R1 verify capture write failed"; return false;
+        }
+    }
+    if (std::fflush(r1_verify_file_) != 0) {
+        err = "private R1 verify capture flush failed"; return false;
+    }
+    ++r1_verify_windows_;
+    return true;
+}
+#endif
 
 bool Verifier::capture(int T, std::string& err) {
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
@@ -2982,6 +3073,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
         return false;
     }
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+    if (!r1_verify_record(T, pos0, err)) return false;
+#endif
     commit_pending_ = false;
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
