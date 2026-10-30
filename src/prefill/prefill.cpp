@@ -5010,6 +5010,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // it (the walk does pending -= gg_released), so the loop never stages into a slot a
                         // group still holds.
                         size_t gg_released = 0;
+                        // Diagnostic-only controls for the stream-all grouped-gather ring protocol.
+                        // Off by default; neither changes grouping, kernel math, routing or cache contents.
+                        const bool gg_diag_wait_each = group_gather && [] {
+                            const char* v = std::getenv("STRATA_QPN_DIAG_GG_WAIT_EACH");
+                            return v && std::atoi(v) != 0;
+                        }();
+                        const bool gg_diag_release_each = group_gather && [] {
+                            const char* v = std::getenv("STRATA_QPN_DIAG_GG_RELEASE_EACH");
+                            return v && std::atoi(v) != 0;
+                        }();
                         // STRATA_MMQ_DIRECT=1: a resident expert with guard room in its slot is not gathered - the
                         // group's pointer tables give MMQ each expert's own address (group position q), the others are
                         // gathered at compact positions c = 0..ns-1 of the group buffers, as before (same bytes)
@@ -5024,7 +5034,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const auto& f = lay.fmt[(size_t) l];
                             if (gg_nslots > 0) {   // the copies land in order: the last one covers the others
                                 pt.mark(kPfWaitCopy, cs);
-                                supply.ready_wait(l, m.cs, m.copied[gg_slots[gg_nslots - 1]]);
+                                if (gg_diag_wait_each) {
+                                    for (int i = 0; i < gg_nslots; ++i)
+                                        supply.ready_wait(l, m.cs, m.copied[gg_slots[i]]);
+                                } else {
+                                    supply.ready_wait(l, m.cs, m.copied[gg_slots[gg_nslots - 1]]);
+                                }
                                 pt.mark(kPfDequant, cs);
                             }
                             supply.gather(l, m.cs, [&] {
@@ -5048,9 +5063,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 }
                             }
                             if (gg_nslots > 0) {
-                                const int rel = gg_slots[gg_nslots - 1];
-                                cudaEventRecord(m.used[rel], m.cs);
-                                for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                if (gg_diag_release_each) {
+                                    for (int i = 0; i < gg_nslots; ++i) {
+                                        const int sl = gg_slots[i];
+                                        cudaEventRecord(m.used[sl], m.cs);
+                                        m.used_of[sl] = sl;
+                                    }
+                                } else {
+                                    const int rel = gg_slots[gg_nslots - 1];
+                                    cudaEventRecord(m.used[rel], m.cs);
+                                    for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                }
                             }
                             gg_nslots = 0;
                             gg.first = gg.n;
@@ -5161,7 +5184,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     if (indirect_w) {
                                         if (gg_nslots > 0) {
                                             pt.mark(kPfWaitCopy, cs);
-                                            supply.ready_wait(l, m.cs, m.copied[gg_slots[gg_nslots - 1]]);
+                                            if (gg_diag_wait_each) {
+                                                for (int i = 0; i < gg_nslots; ++i)
+                                                    supply.ready_wait(l, m.cs, m.copied[gg_slots[i]]);
+                                            } else {
+                                                supply.ready_wait(l, m.cs, m.copied[gg_slots[gg_nslots - 1]]);
+                                            }
                                         }
                                         tbl.n = ngx;
                                         for (int i = 0; i < ngx; ++i) { tbl.gu[i] = gu_ptr[i]; tbl.dn[i] = dn_ptr[i]; }
@@ -5184,9 +5212,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     }
                                     if (indirect_w && gg_nslots > 0) {
                                         // the down projection has read the ring blobs: the slots can go now
-                                        const int rel = gg_slots[gg_nslots - 1];
-                                        cudaEventRecord(m.used[rel], m.cs);
-                                        for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                        if (gg_diag_release_each) {
+                                            for (int i = 0; i < gg_nslots; ++i) {
+                                                const int sl = gg_slots[i];
+                                                cudaEventRecord(m.used[sl], m.cs);
+                                                m.used_of[sl] = sl;
+                                            }
+                                        } else {
+                                            const int rel = gg_slots[gg_nslots - 1];
+                                            cudaEventRecord(m.used[rel], m.cs);
+                                            for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                        }
                                         if (!stream_all) gg_released += (size_t) gg_nslots;   // the walk's pending
                                         gg_nslots = 0;
                                     }
