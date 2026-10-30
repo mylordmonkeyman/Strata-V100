@@ -6,6 +6,8 @@ on:
       - 'src/prefill/qpn_supply_trace.hpp'
       - 'tools/qpn_supply_profile.py'
       - 'tools/test_qpn_supply_profile.py'
+      - 'tools/qpn_layer_compare.py'
+      - 'tools/test_qpn_layer_compare.py'
       - '.github/workflows/qpn-supply-profile.yml'
   workflow_dispatch:
 permissions:
@@ -20,6 +22,11 @@ jobs:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
       - run: python3 -m unittest discover -s tools -p test_qpn_supply_profile.py -v
+      - name: Test private capture parsing in an isolated host environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qpn-layer-venv"
+          "$RUNNER_TEMP/qpn-layer-venv/bin/python" -m pip install 'numpy>=2,<3'
+          "$RUNNER_TEMP/qpn-layer-venv/bin/python" -m unittest discover -s tools -p test_qpn_layer_compare.py -v
   profile:
     needs: [host]
     if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
@@ -57,7 +64,7 @@ jobs:
           cmake --build "$build" --target strata --parallel 16
           "$model_state/venv/bin/python" tools/qpn_supply_profile.py \
             --source "$PWD" --binary "$build/strata" --prepared "$model_state/prepared" \
-            --state "$model_state" --report qpn-supply-results --repeatability
+            --state "$model_state" --report qpn-supply-results --layer-repeat
       - name: Upload typed aggregate timelines and comparisons only
         if: always()
         uses: actions/upload-artifact@v4

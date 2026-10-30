@@ -140,3 +140,55 @@ experiment first. Only then compare a separate opt-in, isolated
 routing-aware supply diagnostic against unmodified MMQ with equal numerical
 output, explicit byte accounting, stalls, and matched timing. Do not
 conflate this potential MMQ-side transfer reduction with a QPN-specific gain.
+
+## Repeatability result and localization gate
+
+Run **40994067899**, experimental source `5a4c390c17fb2a09882f1d79ec0065725c7b8171`,
+aggregate artifact **12950233696** completed four MMQ-only model invocations:
+
+| Control | First-logit relative L2 | KL(A||B) | Argmax same |
+|---|---:|---:|---|
+| Threaded issuer, tracing off in both fresh processes | 0.2608480841 | 0.1136804738 | yes |
+| Inline issuer, tracing off vs on | 0.3355579349 | 0.2330369091 | **no** |
+
+All processes returned zero and completed 2,047 prefill tokens; the diagnostic
+correctly failed. The first pair establishes nonrepeatability **without tracing in
+this experimental binary**. It does not establish that unmodified `main` shares
+the defect. The second pair shows that disabling the threaded issuer alone does
+not establish parity. Do not assign this solely to instrumentation or a confirmed
+copy-ring race, and do not interpret any timings as a speedup.
+
+Next, `--layer-repeat` reuses the **existing** `STRATA_DBG_FEAT` and
+`STRATA_PREFILL_DUMP_R_ALL` diagnostic hooks in two trace-off 1024 runs. It changes
+no engine code or production switches. Capture all 48 router inputs/IDs/weights
+in both chunks (1024 + 1023 tokens), plus the chunk-end residual snapshots.
+The parser verifies complete record geometry, finite values and matched ordering;
+exports only hashes, mismatch counts and mathematical comparisons. Raw features,
+expert IDs, routing weights and residual arrays stay in the private mode-0700
+runner directory. Original source/model and prompt digests are enforced.
+
+On the pinned Volta build, `mixed_bf` holds IEEE FP16 bits; route weights and
+chunk residual dumps are explicitly BF16. Keep these encodings distinct.
+The existing feature hooks synchronize the compute stream. If they stabilize
+execution, that is evidence of timing sensitivity, **not** proof that the
+uninstrumented path is repaired. If captured inputs first diverge after a given
+MoE layer, investigate that boundary; if every prefill capture matches while
+first logits differ, investigate post-prefill state/cache handoff and the first
+verification window. No QPN or Q4TC promotion until the blocker is resolved.
+
+### Chunk-size and issuer isolation controls completed
+
+Run **40995236933**, source `d670c8ec74466bc1702f71d7b3e72af8229bd49a`,
+artifact **12951610808**, six trace-off MMQ-only processes all returned zero:
+
+| Repeated supply regime | Relative L2 | KL(A||B) | Argmax same |
+|---|---:|---:|---|
+| 768 staged (`stream_min=1024`) | **0** | **0** | yes |
+| 1024 forced staged (`stream_min=4096`) | **0** | **0** | yes |
+| 1024 stream-all, inline issuer | **0.2723905036** | **0.1733464362** | yes |
+
+This narrows the current experimental-binary failure to the stream-all path,
+rather than 1024-token geometry or the threaded issuer alone. It does not locate
+the defective operation. The next layer-repeat diagnostic targets stream-all;
+forced-staged controls and the earlier 768 result are preserved in the harness.
+No performance comparison is qualified while stream-all outputs are unstable.

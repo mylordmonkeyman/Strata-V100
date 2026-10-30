@@ -111,8 +111,12 @@ def main():
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
         p.add_argument('--'+name, required=True, type=Path)
     p.add_argument('--repeatability', action='store_true',
-                   help='isolate 768 staged, 1024 forced-staged, and 1024 inline stream-all repeatability')
+                   help='diagnose 1024 off/off repeatability and inline-issuer off/on parity')
+    p.add_argument('--layer-repeat', action='store_true',
+                   help='repeat stream-all using existing private per-layer captures to locate divergence')
     a = p.parse_args()
+    if a.repeatability and a.layer_repeat:
+        raise ValueError('diagnostic modes are mutually exclusive')
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
     os.chmod(private, 0o700)
@@ -134,6 +138,9 @@ def main():
                                 'sampled layers only; no new device routing readback',
                                 'no full-model QPN or Q4TC execution; no warm-engine measurement'],
                    runs=[], comparisons=[], status='pending')
+    if a.layer_repeat and (summary['model_sha256'] != '1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5' or
+                           summary['prompt_sha256'] != 'df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414'):
+        raise ValueError('layer diagnostic model or prompt differs from pinned source')
     report = a.report/'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False)+'\n')
@@ -148,10 +155,15 @@ def main():
                     (1024, 'stream-all-inline-repeat', '0', '1024', ((False, 'off-a'), (False, 'off-b')))]
                    if a.repeatability else
                    [(n, 'standard', '1', '1024', ((False, 'off'), (True, 'trace'))) for n in (768, 1024)])
+    if a.layer_repeat:
+        experiments = [(1024, 'layer-repeat', '1', '1024', ((False, 'capture-a'), (False, 'capture-b')))]
+        summary['scope'] = 'MMQ stream-all synchronized private layer repeatability diagnosis; no speed claim'
     summary['repeatability_diagnostic'] = a.repeatability
+    summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
     for prefill, experiment, issuer, stream_min, variants in experiments:
         pair = []
+        capture_paths = []
         for trace, variant in variants:
             label = f'{prefill}-{experiment}-{variant}'
             env = base.copy()
@@ -159,6 +171,11 @@ def main():
             env['STRATA_PREFILL_STREAM_MIN'] = stream_min
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
+            if a.layer_repeat:
+                feature_path, residual_path = private/(label+'.features'), private/(label+'.residuals')
+                env.update(STRATA_DBG_FEAT=str(feature_path), STRATA_DBG_FEAT_LAYERS=','.join(map(str,range(48))),
+                           STRATA_PREFILL_DUMP_R_ALL=str(residual_path))
+                capture_paths.append((feature_path,residual_path))
             cmd = [str(a.binary), '--pack', str(a.prepared/'pack'), '--native', str(a.prepared/'dense.gguf'),
                    '--native-dense-gguf', str(a.prepared/'dense.gguf'), '--ple-gguf', str(a.prepared/'ple-nvfp4.gguf'),
                    '--tokens-file', str(tokenfile), '--max-context', '4096', '--max-new', '16', '--greedy',
@@ -199,15 +216,30 @@ def main():
             save()
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
         metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min)
+        if a.layer_repeat:
+            from qpn_layer_compare import compare_features, compare_residuals
+            try:
+                metrics['prefill_features'] = compare_features(capture_paths[0][0], capture_paths[1][0])
+                metrics['chunk_residuals'] = compare_residuals(capture_paths[0][1], capture_paths[1][1])
+            except (ValueError, OSError) as error:
+                summary['status'] = 'failed_private_capture_validation'
+                summary['capture_error_type'] = type(error).__name__
+                save(); return 2
+            metrics['layer_capture_equal'] = all(
+                r['hidden']['bitwise_equal'] and r['route_ids_equal'] and r['route_weights']['bitwise_equal']
+                for r in metrics['prefill_features']['records'])
+            metrics['chunk_residuals_equal'] = all(r['bitwise_equal'] for r in metrics['chunk_residuals'])
+            parity_failed |= not (metrics['layer_capture_equal'] and metrics['chunk_residuals_equal'])
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
-            if not a.repeatability:
+            if not (a.repeatability or a.layer_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = ('isolation_controls_passed_prior_threaded_failure_unresolved' if a.repeatability
+    summary['status'] = ('synchronized_layer_repeat_passed_uninstrumented_failure_unresolved' if a.layer_repeat
+                         else 'isolation_controls_passed_prior_threaded_failure_unresolved' if a.repeatability
                          else 'diagnostic_complete_quality_unqualified')
     save()
     return 0
