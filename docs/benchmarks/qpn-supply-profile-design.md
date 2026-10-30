@@ -41,6 +41,11 @@ latency. Intersections merge nested intervals to avoid counting them twice.
 Only the sampled layers have transfer accounting; do not call their totals a
 whole-model transfer total. Nsight hardware counters remain permission-blocked.
 
+The runner keeps the native pack's required `--spec 2` and the previously
+qualified 16-token generation bound. The first attempt at `--spec 0` was
+refused by CLI validation before model loading (run 40992134275); it produced
+no performance or numerical result.
+
 The runner launches the same pinned model/prompt with tracing off and on for
 each supply regime. Off runs provide uninstrumented timing references, but this
 four-run diagnostic does **not** establish a statistical speedup. All QPN execution

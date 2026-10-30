@@ -145,9 +145,9 @@ def main():
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             cmd = [str(a.binary), '--pack', str(a.prepared/'pack'), '--native', str(a.prepared/'dense.gguf'),
                    '--native-dense-gguf', str(a.prepared/'dense.gguf'), '--ple-gguf', str(a.prepared/'ple-nvfp4.gguf'),
-                   '--tokens-file', str(tokenfile), '--max-context', '4096', '--max-new', '1', '--greedy',
+                   '--tokens-file', str(tokenfile), '--max-context', '4096', '--max-new', '16', '--greedy',
                    '--expert-cache', 'auto', '--expert-profile', str(a.source/'data/expert-profile.bin'),
-                   '--resident-budget-gib', '24', '--pool-workers', '16', '--prefill', str(prefill), '--spec', '0',
+                   '--resident-budget-gib', '24', '--pool-workers', '16', '--prefill', str(prefill), '--spec', '2',
                    '--suffix-draft', '0', '--adapt-every', '0', '--vram-reserve-mib', '1536', '--stats']
             log = private/(label+'.log')
             start = time.monotonic()
