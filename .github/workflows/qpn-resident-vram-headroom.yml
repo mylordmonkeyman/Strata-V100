@@ -1,0 +1,72 @@
+name: QPN resident-cache V100 read-only headroom gate
+on:
+  push:
+    branches: ['qpn/prepacked-stream']
+    paths:
+      - 'tools/qpn_resident_vram_probe.py'
+      - 'tools/test_qpn_resident_vram_probe.py'
+      - '.github/workflows/qpn-resident-vram-headroom.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: strata-qpn-v100
+  cancel-in-progress: false
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: python3 -m unittest discover -s tools -p test_qpn_resident_vram_probe.py -v
+      - run: python3 -m unittest discover -s tools -p test_qpn_resident_cache_feasibility.py -v
+  headroom:
+    needs: [host]
+    if: github.repository == 'mylordmonkeyman/Strata-V100' && github.actor == 'mylordmonkeyman'
+    runs-on: [self-hosted, linux, x64, v100-sm70, strata-qpn]
+    timeout-minutes: 65
+    env:
+      QPN_STATE_DIR: /srv/strata-qpn
+      QPN_CUDA_ROOT: /usr/local/cuda-12.8
+      CUDA_VISIBLE_DEVICES: '0'
+      CUDA_MODULE_LOADING: EAGER
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Read-only pinned MMQ inference and GPU memory sampling
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$QPN_CUDA_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$QPN_CUDA_ROOT/lib64"
+          mkdir -p qpn-resident-headroom
+          exec 9>"$QPN_STATE_DIR/gpu.lock"
+          flock -n 9
+          if nvidia-smi -i 0 --query-compute-apps=pid,process_name --format=csv,noheader |
+             grep -Eq '^[[:space:]]*[0-9]+,'; then
+            echo 'GPU has compute clients: refusing diagnostic' >&2
+            exit 2
+          fi
+          model_state="$QPN_STATE_DIR/full-model"
+          build="$QPN_STATE_DIR/builds/qpn-full-model-opt-in"
+          test -f "$model_state/prepared/pack/experts.bin"
+          test -f "$model_state/prompt-2048.txt"
+          test -x "$QPN_CUDA_ROOT/bin/nvcc"
+          cmake -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSTRATA_ENABLE_CUDA=ON -DSTRATA_EXPERIMENTAL_SM60=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_CUDA_COMPILER="$QPN_CUDA_ROOT/bin/nvcc" \
+            -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
+            -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
+          cmake --build "$build" --target strata --parallel 16
+          "$model_state/venv/bin/python" tools/qpn_resident_vram_probe.py \
+            --source "$PWD" --binary "$build/strata" \
+            --prepared "$model_state/prepared" --state "$model_state" \
+            --report qpn-resident-headroom/summary.json
+      - name: Upload allowlisted aggregate memory/provenance only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpn-resident-headroom
+          path: qpn-resident-headroom/summary.json
+          retention-days: 14
+          if-no-files-found: warn
