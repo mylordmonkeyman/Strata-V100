@@ -114,10 +114,12 @@ def main():
                    help='diagnose 1024 off/off repeatability and inline-issuer off/on parity')
     p.add_argument('--workaround-repeat', action='store_true',
                    help='repeat uninstrumented stream-all with the restored known-good NaN recipe')
+    p.add_argument('--gather-repeat', action='store_true',
+                   help='isolate stream-all grouped gather with two tracing-off repeated issuer controls')
     p.add_argument('--layer-repeat', action='store_true',
                    help='repeat stream-all using existing private per-layer captures to locate divergence')
     a = p.parse_args()
-    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat)) > 1:
+    if sum((a.repeatability, a.layer_repeat, a.workaround_repeat, a.gather_repeat)) > 1:
         raise ValueError('diagnostic modes are mutually exclusive')
     a.report.mkdir(parents=True, exist_ok=True)
     private = Path(tempfile.mkdtemp(prefix='qpn-supply-', dir=a.state))
@@ -163,8 +165,13 @@ def main():
     if a.workaround_repeat:
         experiments = [(1024, 'restored-nan-recipe-repeat', '1', '1024', ((False, 'off-a'), (False, 'off-b')))]
         summary['scope'] = 'MMQ stream-all repeatability with restored prior NaN workaround; no speed or quality claim'
+    if a.gather_repeat:
+        experiments = [(1024, 'stream-all-ungrouped-threaded', '1', '1024', ((False, 'off-a'), (False, 'off-b'))),
+                       (1024, 'stream-all-ungrouped-inline', '0', '1024', ((False, 'off-a'), (False, 'off-b')))]
+        summary['scope'] = 'MMQ stream-all group-gather-disabled repeatability; no QPN or speed claim'
     summary['restored_nan_recipe'] = True
     summary['workaround_repeat_diagnostic'] = a.workaround_repeat
+    summary['gather_repeat_diagnostic'] = a.gather_repeat
     summary['repeatability_diagnostic'] = a.repeatability
     summary['layer_repeat_diagnostic'] = a.layer_repeat
     parity_failed = False
@@ -176,6 +183,8 @@ def main():
             env = base.copy()
             env['STRATA_PREFILL_ISSUER'] = issuer
             env['STRATA_PREFILL_STREAM_MIN'] = stream_min
+            if a.gather_repeat:
+                env['STRATA_PREFILL_GROUP_GATHER'] = '0'
             out_logits = private/(label+'.f32')
             env.update(STRATA_DUMP_FIRST_LOGITS=str(out_logits), STRATA_QPN_SUPPLY_TRACE=str(int(trace)))
             if a.layer_repeat:
@@ -198,6 +207,7 @@ def main():
                 except subprocess.TimeoutExpired:
                     code = 124
             row = dict(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min, variant=variant,
+                       group_gather='0' if a.gather_repeat else 'default',
                        trace=trace, returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
             summary['runs'].append(row)
@@ -222,7 +232,8 @@ def main():
             print(f'MMQ supply diagnostic prefill={prefill} trace={trace} completed', flush=True)
             save()
         metrics = {k:v for k,v in diff(*pair).items() if k not in ('argmax_base', 'argmax_candidate')}
-        metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min)
+        metrics.update(prefill=prefill, experiment=experiment, issuer=issuer, stream_min=stream_min,
+                       group_gather='0' if a.gather_repeat else 'default')
         if a.layer_repeat:
             from qpn_layer_compare import compare_features, compare_residuals, compare_boundaries
             try:
@@ -242,12 +253,13 @@ def main():
         summary['comparisons'].append(metrics)
         if metrics['relative_l2'] > 1e-7 or not metrics['argmax_match']:
             parity_failed = True
-            if not (a.repeatability or a.layer_repeat or a.workaround_repeat):
+            if not (a.repeatability or a.layer_repeat or a.workaround_repeat or a.gather_repeat):
                 summary['status'] = 'failed_trace_changed_output'; save(); return 3
         save()
     if parity_failed:
         summary['status'] = 'failed_repeatability_or_trace_parity'; save(); return 3
-    summary['status'] = ('restored_nan_recipe_repeat_passed_quality_unqualified' if a.workaround_repeat
+    summary['status'] = ('ungrouped_stream_all_repeat_passed_prior_failure_unresolved' if a.gather_repeat
+                         else 'restored_nan_recipe_repeat_passed_quality_unqualified' if a.workaround_repeat
                          else 'synchronized_layer_repeat_passed_uninstrumented_failure_unresolved' if a.layer_repeat
                          else 'isolation_controls_passed_prior_threaded_failure_unresolved' if a.repeatability
                          else 'diagnostic_complete_quality_unqualified')
