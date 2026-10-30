@@ -1,6 +1,6 @@
 import array
 import unittest
-from qpn_transition_abba import ORDER, mode_flags, compare, evaluate, supply_plan, supply_mode_flags, validate_supply_traces, evaluate_supply
+from qpn_transition_abba import ORDER, mode_flags, compare, evaluate, supply_plan, supply_mode_flags, validate_supply_traces, evaluate_supply, SELECTIVE_ORDER, selective_flags, selective_accounting
 
 
 class TransitionABTest(unittest.TestCase):
@@ -101,6 +101,37 @@ class SupplyControlTest(unittest.TestCase):
     def test_signed_zero_is_not_bitwise_equal(self):
         self.assertFalse(compare(array.array('f', [0., 1.]), array.array('f', [-0., 1.]),
                                  'off', 'trace')['bitwise_equal'])
+
+
+class SelectiveSupplyTest(unittest.TestCase):
+    def line(self, copies=6, skipped=4, nbytes=60, saved=40, jobs=8, skipped_jobs=3):
+        return (f'strata qpn selective-supply: chunk=0 tokens=1024 entries=10 copies={copies} '
+                f'skipped={skipped} bytes={nbytes} skipped_bytes={saved} jobs={jobs} skipped_jobs={skipped_jobs}\n')
+
+    def test_matched_abba_keeps_transition_fallback_in_both_arms(self):
+        self.assertEqual(SELECTIVE_ORDER, ('transition-fallback','selective-supply','selective-supply','transition-fallback'))
+        for mode in SELECTIVE_ORDER:
+            f = selective_flags(mode)
+            self.assertEqual(f['STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK'], '1')
+            self.assertEqual(f['STRATA_QPN_MMQ_SELECTIVE_SUPPLY'], str(int(mode == 'selective-supply')))
+        with self.assertRaises(ValueError): selective_flags('forced-staged')
+
+    def test_counter_allowlist_and_missing_work(self):
+        r = selective_accounting('private log data\n' + self.line(), 'selective-supply')
+        self.assertEqual(r['skipped_bytes'], 40)
+        self.assertEqual(len(r), 9)
+        for text in ('', self.line()*2, self.line(copies=5), self.line(skipped_jobs=5),
+                     self.line(copies=10, skipped=0, saved=0, skipped_jobs=0)):
+            with self.assertRaises(ValueError): selective_accounting(text, 'selective-supply')
+        with self.assertRaises(ValueError): selective_accounting(self.line(), 'transition-fallback')
+        selective_accounting(self.line(copies=10, skipped=0, saved=0, skipped_jobs=0), 'transition-fallback')
+
+    def test_selective_evaluation_rejects_changed_logits(self):
+        x = array.array('f', [1.,2.]); y = array.array('f', [1.01,2.])
+        s = dict(runs=[dict(mode=m, prefill_ms=100., ttft_ms=200.) for m in SELECTIVE_ORDER])
+        self.assertTrue(evaluate(s, [x,x,x,x], SELECTIVE_ORDER))
+        self.assertEqual(s['median_prefill_speedup'], 1.)
+        self.assertFalse(evaluate(s, [x,y,y,x], SELECTIVE_ORDER))
 
 
 if __name__ == '__main__':

@@ -1,17 +1,5 @@
 name: QPN MMQ staged and stream-all supply diagnosis
 on:
-  push:
-    branches: ['qpn/prepacked-stream']
-    paths:
-      - 'src/prefill/qpn_supply_trace.hpp'
-      - 'src/prefill/prefill.cpp'
-      - 'src/prefill/qpn_boundary_capture.hpp'
-      - 'tools/qpn_supply_profile.py'
-      - 'tools/qpn_full_model_ab.py'
-      - 'tools/test_qpn_supply_profile.py'
-      - 'tools/qpn_layer_compare.py'
-      - 'tools/test_qpn_layer_compare.py'
-      - '.github/workflows/qpn-supply-profile.yml'
   workflow_dispatch:
 permissions:
   contents: read

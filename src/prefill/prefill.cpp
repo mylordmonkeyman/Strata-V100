@@ -3206,7 +3206,33 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const char* v = std::getenv("STRATA_PF_SKIP_UNROUTED");
             return v != nullptr && std::atoi(v) != 0;
         }();
-        const bool skip_on = skip_unrouted_env && stream_all && volta_wmma && m.Xq == nullptr;
+        // Isolated same-math MMQ supply experiment, off in every normal build/run.
+        // Unpublished layers still copy. Published unrouted entries keep all slot
+        // fences and drain their host staging jobs, but omit their H2D only.
+        bool mmq_supply_diag = false, mmq_skip = false;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        if (const char* v = std::getenv("STRATA_QPN_MMQ_SELECTIVE_SUPPLY"); v && stream_all) {
+            int major = 0, minor = 0;
+            const char* mode = std::getenv("STRATA_PREFILL_NVFP4");
+            const char* qpn = std::getenv("STRATA_QPN_PREFILL_EXPERIMENTAL");
+            bool eligible = !m.pp && next_ == nullptr && !core::peer_portable() &&
+                            lay0.native && m.Xq && !volta_wmma && cpu_share_env() == 0.0 &&
+                            mode && std::string(mode) == "w4a8" && qpn && std::atoi(qpn) == 0;
+            eligible = eligible && cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, m.device) == cudaSuccess &&
+                       cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, m.device) == cudaSuccess &&
+                       major == 7 && minor == 0;
+            for (int64_t l = LB; eligible && l < LE; ++l)
+                eligible = mmq_plan().any && mmq_plan().layer[(size_t) l] &&
+                           lay0.fmt[(size_t) l].gu_type == (int) GGML_TYPE_NVFP4 &&
+                           lay0.fmt[(size_t) l].d_type == (int) GGML_TYPE_NVFP4;
+            if (!eligible) { err = "experimental selective supply: unsupported MMQ configuration"; return false; }
+            mmq_supply_diag = true;
+            mmq_skip = std::atoi(v) != 0;
+        }
+#endif
+        uint64_t supply_copies = 0, supply_skipped = 0, supply_bytes = 0, supply_skipped_bytes = 0;
+        uint64_t supply_jobs = 0, supply_skipped_jobs = 0;
+        const bool skip_on = (skip_unrouted_env && stream_all && volta_wmma && m.Xq == nullptr) || mmq_skip;
         std::atomic<int64_t> routing_ready{-1};   // the last layer whose routed flags are published; -1: none yet
         // multi-GPU: the peer's ring - issue its copies up to `limit` / give entries back (the peer device is current)
         auto p_issue_until = [&](size_t limit) {
@@ -3299,8 +3325,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 // copy_blob: a Stager job is always drained, an unpublished layer is always copied, and a
                 // published one leaves out only the blobs its routing did not pick.  The slot protocol below is
                 // untouched - its `used` wait, its `copied` record and its live flag happen for a skipped entry too.
-                const bool copy_blob = en.job >= 0 || !skip_on ||
+                const bool copy_blob = (en.job >= 0 && !mmq_skip) || !skip_on ||
                                        routing_ready.load(std::memory_order_acquire) < (int64_t) en.l || en.routed;
+                if (mmq_supply_diag) {
+                    if (copy_blob) { ++supply_copies; supply_bytes += bytes; }
+                    else { ++supply_skipped; supply_skipped_bytes += bytes; }
+                    if (en.job >= 0) { ++supply_jobs; if (!copy_blob) ++supply_skipped_jobs; }
+                }
+                if (!copy_blob && en.job >= 0) {
+                    // Drain every job and record the same copy-stream completion fence:
+                    // otherwise the stager's issued count can stall or reuse a live buffer.
+                    (void) m.stager->wait(en.job);
+                    m.stager->issued_one(en.job, m.copy);
+                }
                 if (copy_blob) {
                     if (en.job < 0) {
                         supply.h2d(en.l, m.stage_dev[sl], en.blob, bytes, m.copy);
@@ -3356,8 +3393,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
                     if (m.stage_live[sl]) supply.reuse_wait(en.l, m.copy, m.used[m.used_of[sl]]);
-                    const bool copy_blob = en.job >= 0 || !skip_on ||
+                    const bool copy_blob = (en.job >= 0 && !mmq_skip) || !skip_on ||
                                            routing_ready.load(std::memory_order_acquire) < (int64_t) en.l || en.routed;
+                    if (mmq_supply_diag) {
+                        if (copy_blob) { ++supply_copies; supply_bytes += bytes; }
+                        else { ++supply_skipped; supply_skipped_bytes += bytes; }
+                        if (en.job >= 0) { ++supply_jobs; if (!copy_blob) ++supply_skipped_jobs; }
+                    }
+                    if (!copy_blob && en.job >= 0) {
+                        // Drain every job and record the same copy-stream completion fence:
+                        // otherwise the stager's issued count can stall or reuse a live buffer.
+                        (void) m.stager->wait(en.job);
+                        m.stager->issued_one(en.job, m.copy);
+                    }
                     if (copy_blob) {
                         if (en.job < 0) {
                             supply.h2d(en.l, m.stage_dev[sl], en.blob, bytes, m.copy);
@@ -5773,6 +5821,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             stats_.ms_experts_host += iss_ms;
             stats_.experts_streamed += iss_streamed;
             stats_.experts_dma += iss_dma;
+        }
+        // Only inspect producer counters after the issuer join above. No expert IDs or payloads are exported.
+        if (mmq_supply_diag) {
+            std::fprintf(stderr, "strata qpn selective-supply: chunk=%lld tokens=%lld entries=%llu copies=%llu skipped=%llu bytes=%llu skipped_bytes=%llu jobs=%llu skipped_jobs=%llu\n",
+                         (long long) p0, (long long) T, (unsigned long long) seq.size(),
+                         (unsigned long long) supply_copies, (unsigned long long) supply_skipped,
+                         (unsigned long long) supply_bytes, (unsigned long long) supply_skipped_bytes,
+                         (unsigned long long) supply_jobs, (unsigned long long) supply_skipped_jobs);
         }
         if (!supply.report(p0, T, m.ring, stream_all, m.cs, m.copy)) {
             err = "experimental supply trace: CUDA event or stream failure";

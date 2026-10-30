@@ -1,8 +1,9 @@
-name: QPN repeatable MMQ supply profile V100
+name: QPN selective MMQ supply ABBA V100
 on:
   push:
     branches: ['qpn/prepacked-stream']
     paths:
+      - 'src/prefill/prefill.cpp'
       - 'tools/qpn_transition_abba.py'
       - 'tools/test_qpn_transition_abba.py'
       - '.github/workflows/qpn-transition-abba.yml'
@@ -33,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Profile repeatable MMQ supply (private logits, aggregate events only)
+      - name: Benchmark selective MMQ supply (private logs, aggregate accounting only)
         shell: bash
         run: |
           set -euo pipefail
@@ -55,7 +56,7 @@ jobs:
             -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=OFF \
             -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
           cmake --build "$build" --target strata --parallel 16
-          "$model_state/venv/bin/python" tools/qpn_transition_abba.py --supply-profile \
+          "$model_state/venv/bin/python" tools/qpn_transition_abba.py --selective-abba \
             --source "$PWD" --binary "$build/strata" --prepared "$model_state/prepared" \
             --state "$model_state" --report qpn-transition-abba-results
           "$model_state/venv/bin/python" -m json.tool qpn-transition-abba-results/summary.json >/dev/null

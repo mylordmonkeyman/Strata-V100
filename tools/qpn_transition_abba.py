@@ -18,6 +18,7 @@ from qpn_supply_profile import transition_bypass_count, parse_traces
 MODEL_SHA = '1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5'
 PROMPT_SHA = 'df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414'
 ORDER = ('both-off', 'transition-fallback', 'transition-fallback', 'both-off')
+SELECTIVE_ORDER = ('transition-fallback', 'selective-supply', 'selective-supply', 'transition-fallback')
 
 
 def mode_flags(mode):
@@ -34,10 +35,10 @@ def compare(a, b, ref, candidate):
     return d
 
 
-def evaluate(summary, outputs):
+def evaluate(summary, outputs, order=ORDER):
     if len(outputs) != 4 or len(summary['runs']) != 4:
         raise ValueError('incomplete ABBA')
-    summary['comparisons'] = [compare(outputs[i], outputs[j], ORDER[i], ORDER[j])
+    summary['comparisons'] = [compare(outputs[i], outputs[j], order[i], order[j])
                               for i, j in ((0, 3), (1, 2), (0, 1), (0, 2), (3, 1), (3, 2))]
     if not all(d['bitwise_equal'] and d['relative_l2'] == 0 and d['kl_base_vs_candidate'] == 0
                and d['argmax_match'] for d in summary['comparisons']):
@@ -45,13 +46,13 @@ def evaluate(summary, outputs):
         return False
     for field in ('prefill_ms', 'ttft_ms'):
         medians = {mode: statistics.median(r[field] for r in summary['runs'] if r['mode'] == mode)
-                   for mode in ('both-off', 'transition-fallback')}
+                   for mode in (order[0], order[1])}
         if any(not math.isfinite(x) or x <= 0 for x in medians.values()):
             summary['status'] = 'failed_timing'
             return False
         summary['median_' + field] = medians
         summary['median_' + field.removesuffix('_ms') + '_speedup'] = (
-            medians['both-off'] / medians['transition-fallback'])
+            medians[order[0]] / medians[order[1]])
     summary['status'] = 'mmq_abba_bitwise_parity_passed_quality_unqualified'
     return True
 
@@ -108,14 +109,47 @@ def evaluate_supply(summary, outputs):
     return True
 
 
+def selective_flags(mode):
+    if mode not in SELECTIVE_ORDER:
+        raise ValueError('invalid selective supply mode')
+    flags = mode_flags('transition-fallback')
+    flags['STRATA_QPN_MMQ_SELECTIVE_SUPPLY'] = str(int(mode == 'selective-supply'))
+    return flags
+
+
+def selective_accounting(raw, mode):
+    pattern = (r'^strata qpn selective-supply: chunk=(\d+) tokens=(\d+) entries=(\d+) '
+               r'copies=(\d+) skipped=(\d+) bytes=(\d+) skipped_bytes=(\d+) jobs=(\d+) skipped_jobs=(\d+)$')
+    records = re.findall(pattern, raw, re.M)
+    if len(records) != 1:
+        raise ValueError('missing or duplicate selective supply accounting')
+    r = dict(zip(('chunk', 'tokens', 'entries', 'copies', 'skipped', 'bytes', 'skipped_bytes', 'jobs', 'skipped_jobs'),
+                 map(int, records[0])))
+    if (r['chunk'] != 0 or r['tokens'] != 1024 or r['entries'] <= 0 or r['bytes'] <= 0
+            or r['copies'] + r['skipped'] != r['entries'] or r['jobs'] > r['entries']
+            or r['skipped_jobs'] > min(r['jobs'], r['skipped'])):
+        raise ValueError('invalid selective accounting')
+    if mode == 'selective-supply':
+        if r['skipped'] <= 0 or r['skipped_bytes'] <= 0:
+            raise ValueError('selective supply was not exercised')
+    elif mode != 'transition-fallback' or r['skipped'] or r['skipped_bytes'] or r['skipped_jobs']:
+        raise ValueError('baseline unexpectedly skipped transfers')
+    return r
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--supply-profile', action='store_true',
                    help='profile repeatable forced-staged and transition-fallback off/on controls')
+    p.add_argument('--selective-abba', action='store_true',
+                   help='same-stream-all ABBA of default-off routing-aware DMA skipping')
     a = p.parse_args()
-    plan = supply_plan() if a.supply_profile else [(m, False) for m in ORDER]
+    if a.supply_profile and a.selective_abba:
+        p.error('supply modes are mutually exclusive')
+    order = SELECTIVE_ORDER if a.selective_abba else ORDER
+    plan = supply_plan() if a.supply_profile else [(m, False) for m in order]
     a.report.mkdir(parents=True, exist_ok=True)
     a.state.mkdir(parents=True, exist_ok=True)
     prompt = a.state / 'prompt-2048.txt'
@@ -152,6 +186,11 @@ def main():
         summary['limitations'] += ['sampled layers 0/24/47 only; no full-model byte total',
             'event intervals include instrumentation overhead; not occupancy or PCIe link saturation',
             'no timing speedup inferred from instrumented controls; no realistic lookahead implemented']
+    if a.selective_abba:
+        summary.update(scope='MMQ stream-all ABBA: routing-aware selective supply vs matched transition fallback',
+                       order=list(order))
+        summary['limitations'] += ['experimental DMA scheduling; no full-model sanitizer or Graph qualification',
+                                   'host staging jobs still drained; no skipped CPU reads or early routing prediction']
     report = a.report / 'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
@@ -162,7 +201,8 @@ def main():
         private = Path(private_dir)
         for i, (mode, trace) in enumerate(plan):
             trial = env.copy()
-            trial.update(supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
+            trial.update(selective_flags(mode) if a.selective_abba else
+                         supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
             trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
             trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
             log = private / f'{i}.log'
@@ -192,7 +232,7 @@ def main():
                 summary['status'] = 'failed_safety'
                 save()
                 return 2
-            if mode == 'transition-fallback':
+            if mode in ('transition-fallback', 'selective-supply'):
                 try:
                     count = transition_bypass_count(raw)
                 except ValueError:
@@ -231,10 +271,24 @@ def main():
                 summary['status'] = 'failed_supply_trace_validation'
                 save()
                 return 2
+            if a.selective_abba:
+                try:
+                    row['selective_supply'] = selective_accounting(raw, mode)
+                except ValueError:
+                    summary['status'] = 'failed_selective_supply_accounting'
+                    save()
+                    return 2
             outputs.append(v)
             save()
             print(f'MMQ ABBA {i+1}/4 {mode} completed', flush=True)
-        ok = evaluate_supply(summary, outputs) if a.supply_profile else evaluate(summary, outputs)
+        if a.selective_abba:
+            counters = [r['selective_supply'] for r in summary['runs']]
+            total_bytes = {r['bytes'] + r['skipped_bytes'] for r in counters}
+            if len({r['entries'] for r in counters}) != 1 or len(total_bytes) != 1:
+                summary['status'] = 'failed_selective_unmatched_supply'
+                save()
+                return 2
+        ok = evaluate_supply(summary, outputs) if a.supply_profile else evaluate(summary, outputs, order)
         save()
         return 0 if ok else 3
 
