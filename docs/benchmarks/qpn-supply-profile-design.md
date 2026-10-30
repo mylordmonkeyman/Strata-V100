@@ -102,3 +102,41 @@ to that diagnostic pair; default dispatch and synchronization are not patched.
 Both comparisons retain the strict L2 <= 1e-7 / same-argmax gate. A failure remains
 visible even if the other pair passes. No speed claim or dispatch integration until
 this is resolved. Do not infer a confirmed ring race from the first mismatch alone.
+
+## Conditional transfer-opportunity calculation (diagnostic only)
+
+The failed-parity stream-all trace nevertheless exposes a **hypothesis to test**, not a
+qualified speedup: unlike the 768 staged walk, the 1024 stream-all walk issues all
+nonresident experts before routing is known. The opt-in
+`STRATA_PF_SKIP_UNROUTED` path is explicitly restricted to the WMMA walk
+(`volta_wmma && m.Xq == nullptr`), not the native NVFP4 W4A8 MMQ path
+under test. See `src/prefill/prefill.cpp` around lines 3187–3197, 3237–3266
+and 3285–3305. This corrects the overly broad statement that the model
+always transfers only routed experts.
+
+For the **failed** run 40992803235, sampled layers report the following
+arithmetic. Each compressed expert blob in those layers was 2,764,816 bytes;
+`routed nonresident = routed groups - resident routed groups`. The
+hypothetical reduction assumes every such expert is known before issuing DMA,
+with no lookahead or ring-order penalty. It is **not** a measured attainable
+reduction.
+
+| Sample layer | Stream-all copies | Routed nonresident | Copies beyond routed nonresident | Hypothetical H2D bytes avoidable |
+|---|---:|---:|---:|---:|
+| 0 | 275 | 94 | 181 | 500,431,696 (65.8%) |
+| 24 | 306 | 198 | 108 | 298,600,128 (35.3%) |
+| 47 | 343 | 106 | 237 | 655,261,392 (69.1%) |
+
+The original trace's 1024 output parity failed, so these are **diagnostic
+counts only**. They do not establish correct results, PCIe saturation, a
+speedup, or a viable scheduling policy. In particular, waiting for routing
+may destroy copy/compute overlap; stream-all deliberately starts transfers
+ahead of routing, and the copy/compute ring has strict lifetime fences.
+Do **not** enable `STRATA_PF_SKIP_UNROUTED` on W4A8 or change production
+dispatch on the strength of these counts.
+
+**Gate:** resolve the pending threaded off/off and inline off/on repeatability
+experiment first. Only then compare a separate opt-in, isolated
+routing-aware supply diagnostic against unmodified MMQ with equal numerical
+output, explicit byte accounting, stalls, and matched timing. Do not
+conflate this potential MMQ-side transfer reduction with a QPN-specific gain.
