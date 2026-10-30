@@ -148,13 +148,14 @@ void arr(const std::vector<double>& a){
 }
 } // namespace
 int main(int argc,char** argv)try{
-    std::string wp,xp,cp,packed_path;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false;
+    std::string wp,xp,cp,packed_path;int iterations=10,rounds=6,qpn_min=1,qpn_max=128;bool check_graph=false, fused_gu=false, chunkmajor=false, pinned_stream=false, async_pipeline=false;
     for(int i=1;i<argc;i++){
         const std::string flag=argv[i];
         if(flag=="--graph-check"){check_graph=true;continue;}
         if(flag=="--qpn-fused-gu"){fused_gu=true;continue;}
         if(flag=="--qpn-chunkmajor"){chunkmajor=true;continue;}
         if(flag=="--qpn-pinned-stream"){pinned_stream=true;continue;}
+        if(flag=="--qpn-async-pipeline"){async_pipeline=true;continue;}
         if(++i>=argc)throw std::invalid_argument("missing value");
         const std::string val=argv[i];
         if(flag=="--weights")wp=val;
@@ -175,7 +176,8 @@ int main(int argc,char** argv)try{
        (fused_gu && (qpn_min!=129 || qpn_max!=512)) ||
        (chunkmajor && !fused_gu) ||
        (pinned_stream && (!chunkmajor||qpn_min!=129||qpn_max!=512)) ||
-       (!packed_path.empty() && !pinned_stream))
+       (!packed_path.empty() && !pinned_stream) ||
+       (async_pipeline && !pinned_stream))
         throw std::invalid_argument("invalid arguments");
     auto counts=read_counts(cp);
     const int rows=std::accumulate(counts.begin(),counts.end(),0);
@@ -322,9 +324,9 @@ int main(int argc,char** argv)try{
     m::iota(ids.as<int32_t>(),rows,s);
     ck(cudaStreamSynchronize(s));
     m::Context ctx;
-    auto gather=[&](int n){
+    auto gather=[&](int n,const uint8_t* source){
         for(int i=0;i<n;i++){
-            const auto* src=w.as<uint8_t>()+size_t(i)*STRIDE;
+            const auto* src=source+size_t(i)*STRIDE;
             m::gather_native(src,src+MAT,MAT,src+2*MAT,MAT,
                  mmwg.as<uint8_t>()+size_t(i)*2*MAT,
                  mmwd.as<uint8_t>()+size_t(i)*MAT,s,
@@ -366,16 +368,21 @@ int main(int argc,char** argv)try{
                                pinned_qpn->p,packed_h2d,
                                cudaMemcpyHostToDevice,s));
     };
-    auto all=[&](){stream_weights(false);ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(E);mmq(E,rows);};
-    auto mix=[&](){
-        stream_weights(true);
-        ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));gather(fallback_groups);mmq(fallback_groups,fallback_rows);
+    auto all_on=[&](const uint8_t* native){
+        ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));
+        gather(E,native);
+        mmq(E,rows);
+    };
+    auto mix_on=[&](const uint8_t* native,const uint8_t* qpn_packed){
+        ck(cudaMemsetAsync(y.p,0xff,out_bytes,s));
+        gather(fallback_groups,native);
+        mmq(fallback_groups,fallback_rows);
         q::stage_f32(input.as<float>()+size_t(fallback_rows)*N,xh.as<uint16_t>()+size_t(fallback_rows)*N,
                      size_t(small)*N,s);
         for(int i=fallback_groups;i<E;i++){
             const int offset=bounds[i],n=counts[i];
             const q::Schedule schedule{4,1,1,n>16?16:0};
-            auto* src=w.as<uint8_t>()+size_t(i)*STRIDE;
+            const auto* src=native+size_t(i)*STRIDE;
             auto* xv=xh.as<uint16_t>()+size_t(offset)*N;
             auto* gv=gate.as<float>()+size_t(offset)*F;
             auto* uv=up.as<float>()+size_t(offset)*F;
@@ -389,7 +396,7 @@ int main(int argc,char** argv)try{
                 // block addresses and must pass the same numerical oracle.
                 if(chunkmajor)
                     q::projection_chunkmajor_batch(
-                        packed_w->as<uint8_t>()+size_t(i)*STRIDE,0,xv,
+                        qpn_packed+size_t(i)*STRIDE,0,xv,
                         gu.as<float>()+size_t(offset)*GU,1,GU,N,n,schedule,s);
                 else
                     q::projection(src,xv,gu.as<float>()+size_t(offset)*GU,
@@ -404,13 +411,15 @@ int main(int argc,char** argv)try{
             }
             if(chunkmajor)
                 q::projection_chunkmajor_batch(
-                    packed_w->as<uint8_t>()+size_t(i)*STRIDE+2*MAT,0,hhalf,
+                    qpn_packed+size_t(i)*STRIDE+2*MAT,0,hhalf,
                     out,1,N,F,n,schedule,s);
             else
                 q::projection(src+2*MAT,hhalf,out,N,F,n,schedule,s);
             q::scale_down(out,sc,size_t(n)*N,s);
         }
     };
+    auto all=[&](){stream_weights(false);all_on(w.as<uint8_t>());};
+    auto mix=[&](){stream_weights(true);mix_on(w.as<uint8_t>(),packed_w->as<uint8_t>());};
     auto result=[&](){
         ck(cudaStreamSynchronize(s));
         std::vector<float> out(size_t(rows)*N);
@@ -494,6 +503,88 @@ int main(int argc,char** argv)try{
         }
         check_canary();
     }
+    // An isolated realistic two-stream *throughput* test. Each arm uses two
+    // distinct compressed-weight GPU slots and one compute scratch stream,
+    // with copy-stream events guarding reuse. The next iteration's H2D can
+    // overlap this iteration's compute. This does NOT capture a two-stream
+    // CUDA graph or reproduce the model's layer-ahead scheduling.
+    std::array<std::vector<double>,2> pipeline_times;
+    bool pipeline_output_equal=false;
+    if(async_pipeline) {
+        Stream copy_stream;
+        std::array<std::unique_ptr<Dev>,2> native_slots;
+        std::array<std::unique_ptr<Dev>,2> qpn_slots;
+        for(int i=0;i<2;i++) {
+            native_slots[i]=std::make_unique<Dev>(canonical_h2d);
+            qpn_slots[i]=std::make_unique<Dev>(canonical_h2d);
+        }
+        std::array<cudaEvent_t,2> ready{}, consumed{};
+        for(int i=0;i<2;i++) {
+            ck(cudaEventCreateWithFlags(&ready[i],cudaEventDisableTiming));
+            ck(cudaEventCreateWithFlags(&consumed[i],cudaEventDisableTiming));
+        }
+        // Events are explicitly destroyed before stream/buffer destruction.
+        auto next_copy=[&](bool hybrid,int slot){
+            ck(cudaMemcpyAsync(native_slots[slot]->p,pinned_canonical->p,
+                hybrid?fallback_h2d:canonical_h2d,cudaMemcpyHostToDevice,copy_stream.s));
+            if(hybrid)
+                ck(cudaMemcpyAsync(qpn_slots[slot]->as<uint8_t>()+fallback_h2d,
+                    pinned_qpn->p,packed_h2d,cudaMemcpyHostToDevice,copy_stream.s));
+            ck(cudaEventRecord(ready[slot],copy_stream.s));
+        };
+        auto trial=[&](bool hybrid)->double{
+            ck(cudaStreamSynchronize(copy_stream.s));
+            ck(cudaStreamSynchronize(s));
+            Events timer;
+            ck(cudaEventRecord(timer.a,copy_stream.s));
+            next_copy(hybrid,0);
+            for(int k=0;k<iterations;k++){
+                const int current=k&1;
+                if(k+1<iterations) {
+                    const int upcoming=(k+1)&1;
+                    // Do not overwrite weight slots until compute has
+                    // finished consuming all of their previous contents.
+                    if(k+1>=2)
+                        ck(cudaStreamWaitEvent(copy_stream.s,consumed[upcoming],0));
+                    next_copy(hybrid,upcoming);
+                }
+                ck(cudaStreamWaitEvent(s,ready[current],0));
+                if(hybrid)
+                    mix_on(native_slots[current]->as<uint8_t>(),
+                           qpn_slots[current]->as<uint8_t>());
+                else
+                    all_on(native_slots[current]->as<uint8_t>());
+                ck(cudaEventRecord(consumed[current],s));
+            }
+            ck(cudaEventRecord(timer.b,s));
+            ck(cudaEventSynchronize(timer.b));
+            float ms=0;
+            ck(cudaEventElapsedTime(&ms,timer.a,timer.b));
+            if(ms<=0 || !std::isfinite(ms))
+                throw std::runtime_error("invalid async pipeline CUDA timing");
+            const auto actual=result();
+            const auto& expected=hybrid?candidate:baseline;
+            if(std::memcmp(actual.data(),expected.data(),out_bytes))
+                throw std::runtime_error("two-stream pipeline output differs from serial reference");
+            check_canary();
+            return double(ms)*1000/iterations;
+        };
+        // Warm each arm and alternate subsequent observations to reduce
+        // thermal, cache, driver and ordering bias.
+        trial(false);trial(true);
+        for(int rep=0;rep<rounds;rep++)
+            for(int j=0;j<2;j++) {
+                const int arm=(rep+j)&1;
+                pipeline_times[arm].push_back(trial(arm==1));
+            }
+        pipeline_output_equal=true;
+        ck(cudaStreamSynchronize(s));
+        ck(cudaStreamSynchronize(copy_stream.s));
+        for(int i=0;i<2;i++) {
+            ck(cudaEventDestroy(ready[i]));
+            ck(cudaEventDestroy(consumed[i]));
+        }
+    }
     std::printf("{\"scope\":\"complete 16 real expert mixed workload, not full-model TTFT\",");
     std::printf("\"groups\":16,\"fallback_groups\":%d,\"qpn_groups\":%d,\"qpn_min\":%d,\"qpn_max\":%d,\"fused_gu\":%s,\"chunkmajor\":%s,\"pinned_stream\":%s,\"disk_prepacked\":%s,\"cache_load_us\":%.6f,\"repack_cpu_us\":%.6f,\"repack_upload_us\":%.6f,\"control_h2d_bytes\":%zu,\"hybrid_h2d_bytes\":%zu,\"routed_rows\":%d,",
                 fallback_groups,E-fallback_groups,qpn_min,qpn_max,fused_gu?"true":"false",chunkmajor?"true":"false",pinned_stream?"true":"false",packed_path.empty()?"false":"true",cache_load_us,weight_pack_cpu_us,weight_pack_upload_us,pinned_stream?canonical_h2d:0,pinned_stream?fallback_h2d+packed_h2d:0,rows);
@@ -504,6 +595,16 @@ int main(int argc,char** argv)try{
     std::printf("\"graph_checked\":%s,\"graph_replay_equal\":%s,\"graph_changed_input_equal\":%s,",
                 check_graph?"true":"false",check_graph?"true":"false",check_graph?"true":"false");
     std::printf("\"output_tail_guard_ok\":true,\"iterations\":%d,\"rounds\":%d,",iterations,rounds);
+    std::printf("\"async_pipeline\":%s,\"pipeline_output_equal\":%s,",async_pipeline?"true":"false",pipeline_output_equal?"true":"false");
+    if(async_pipeline) {
+        std::printf("\"pipeline_all_mmq_us\":");arr(pipeline_times[0]);
+        std::printf(",\"pipeline_mixed_us\":");arr(pipeline_times[1]);
+        if(rounds>=5)
+            std::printf(",\"pipeline_all_mmq_median_us\":%.6f,\"pipeline_mixed_median_us\":%.6f,\"pipeline_speedup\":%.7f",
+                        med(pipeline_times[0]),med(pipeline_times[1]),
+                        med(pipeline_times[0])/med(pipeline_times[1]));
+        std::printf(",");
+    }
     std::printf("\"all_mmq_us\":");arr(times[0]);std::printf(",\"mixed_qpn_mmq_us\":");arr(times[1]);
     if(rounds>=5)std::printf(",\"all_mmq_median_us\":%.6f,\"mixed_median_us\":%.6f,\"mixed_over_mmq_speedup\":%.7f",med(times[0]),med(times[1]),med(times[0])/med(times[1]));
     if(check_graph){
