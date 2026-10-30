@@ -73,7 +73,7 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -600,7 +600,7 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
     if (r1_verify_file_) std::fclose(r1_verify_file_);
     if (r1_verify_host_) cudaFreeHost(r1_verify_host_);
 #endif
@@ -725,7 +725,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
     // Verification routes live in ids_ on the GPU. The ordinary doorbell h_ids_
     // may contain only CPU-miss IDs, and is NOT a complete route trace.
     // This read-only experiment captures every layer's GPU IDs into preallocated
@@ -1942,7 +1942,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       rr_stats_ != nullptr ? rr_stats_ + (n <= 8 ? 4 : 0) : nullptr, cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
         // CUDA-graph-compatible D2H snapshot after final router changes, before
         // ids_ is reused by the next layer. Pinned destination is disjoint by
         // layer and token group. Never use h_ids_ (the CPU-miss doorbell).
@@ -2363,7 +2363,7 @@ void Verifier::refresh_ar() {
     }
 }
 
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
 bool Verifier::r1_verify_record(int T, int64_t pos0, std::string& err) {
     // Bounded to the first 32 genuine Verifier::run windows; batch, pipeline,
     // prompt-tail and autoregressive phases are NOT inferred or relabeled.
@@ -3073,7 +3073,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
         return false;
     }
-#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && defined(__linux__)
+#if defined(STRATA_QPN_R1_VERIFY_EXPERIMENTAL) && defined(__linux__)
     if (!r1_verify_record(T, pos0, err)) return false;
 #endif
     commit_pending_ = false;
