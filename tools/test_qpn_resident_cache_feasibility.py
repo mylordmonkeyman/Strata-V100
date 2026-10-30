@@ -50,9 +50,9 @@ class ResidentCapacityTest(unittest.TestCase):
             t = Path(tmp)/'trace'
             t.write_bytes(struct.pack('<ii',0,2)+struct.pack('<i',3))
             with self.assertRaises(ValueError): read_private_routing_trace(t)
-            t.write_bytes(struct.pack('<ii',0,2)+struct.pack('<ii',3,3)+b'\\0'*8)
+            t.write_bytes(struct.pack('<ii',0,2)+struct.pack('<ii',3,3)+bytes(8))
             with self.assertRaises(ValueError): read_private_routing_trace(t)
-            t.write_bytes(struct.pack('<ii',0,2)+struct.pack('<ii',3,4)+b'\\0'*8)
+            t.write_bytes(struct.pack('<ii',0,2)+struct.pack('<ii',3,4)+bytes(8))
             count, n, digest = read_private_routing_trace(t)
             self.assertEqual((count[(0,3)],n,len(digest)), (1,1,64))
 
