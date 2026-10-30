@@ -26,6 +26,13 @@ if(STRATA_ENABLE_VOLTA_QPN)
     endif()
     target_link_libraries(strata_prefill PUBLIC strata_volta_qpn)
     target_compile_definitions(strata_prefill PRIVATE STRATA_QPN_PREFILL_EXPERIMENTAL=1)
+    # The private R1 verifier snapshots live in strata_engine, NOT strata_prefill.
+    # Only the opt-in CUDA12.8/Volta experiment compiles the graph D2H hook.
+    if(TARGET strata_engine)
+      target_compile_definitions(strata_engine PRIVATE STRATA_QPN_R1_VERIFY_EXPERIMENTAL=1)
+    else()
+      message(FATAL_ERROR "Experimental QPN R1 verification capture requires strata_engine")
+    endif()
   endif()
   if(STRATA_NATIVE_EXPERTS)
     add_executable(nvfp4_volta_qpn_bench src/kernels/nvfp4_volta_qpn_bench.cpp)
