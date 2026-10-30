@@ -5020,6 +5020,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const char* v = std::getenv("STRATA_QPN_DIAG_GG_RELEASE_EACH");
                             return v && std::atoi(v) != 0;
                         }();
+                        // Diagnostic only: retain grouped stream-all ownership/event protocol,
+                        // but substitute the established serial native gather fallback for
+                        // the batched gather kernel. Default off; not a production fallback.
+                        const bool gg_diag_serial_gather = group_gather && [] {
+                            const char* v = std::getenv("STRATA_QPN_DIAG_GG_SERIAL_GATHER");
+                            return v && std::atoi(v) != 0;
+                        }();
                         // STRATA_MMQ_DIRECT=1: a resident expert with guard room in its slot is not gathered - the
                         // group's pointer tables give MMQ each expert's own address (group position q), the others are
                         // gathered at compact positions c = 0..ns-1 of the group buffers, as before (same bytes)
@@ -5044,7 +5051,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                             supply.gather(l, m.cs, [&] {
                                 // NVFP4: each expert's scales go next to its group slot in the same launch
-                                if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
+                                if (gg_diag_serial_gather || !mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
                                                               m.grp_d, mmq_db, m.cs, f.tail_off,
                                                               f.tail_off ? m.grp_tail : nullptr, zero)) {
                                     for (int i = gg.first; i < gg.n; ++i) {   // not 16-byte aligned: one at a time
