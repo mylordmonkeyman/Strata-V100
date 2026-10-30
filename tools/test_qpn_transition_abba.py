@@ -1,6 +1,6 @@
 import array
 import unittest
-from qpn_transition_abba import ORDER, mode_flags, compare, evaluate, supply_plan, validate_supply_traces, evaluate_supply
+from qpn_transition_abba import ORDER, mode_flags, compare, evaluate, supply_plan, supply_mode_flags, validate_supply_traces, evaluate_supply
 
 
 class TransitionABTest(unittest.TestCase):
@@ -60,6 +60,16 @@ class SupplyControlTest(unittest.TestCase):
                                   routed=dict(groups=4, resident_groups=2, rows=10, resident_rows=6))
                              for l in (0, 24, 47)])
                 for i, (c, t) in enumerate(((0, 1024), (1024, 1023)))]
+
+    def test_forced_staged_does_not_emit_transition_counter(self):
+        staged = supply_mode_flags('forced-staged')
+        transition = supply_mode_flags('transition-fallback')
+        self.assertEqual(staged['STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK'], '0')
+        self.assertEqual(transition['STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK'], '1')
+        self.assertEqual(staged['STRATA_QPN_DIAG_GG_DISABLE_STAGED'], '0')
+        self.assertEqual(staged['STRATA_QPN_DIAG_GG_DISABLE_STREAM'], '0')
+        with self.assertRaises(ValueError):
+            supply_mode_flags('both-off')
 
     def test_complete_accounting_both_supply_paths(self):
         self.assertEqual(supply_plan(), [('forced-staged', False), ('forced-staged', True),

@@ -61,6 +61,16 @@ def supply_plan():
             ('transition-fallback', False), ('transition-fallback', True)]
 
 
+def supply_mode_flags(mode):
+    """Forced-staged is grouped MMQ without the transition diagnostic counter."""
+    if mode not in ('forced-staged', 'transition-fallback'):
+        raise ValueError('invalid supply mode')
+    flags = mode_flags('transition-fallback')
+    if mode == 'forced-staged':
+        flags['STRATA_QPN_DIAG_GG_TRANSITION_FALLBACK'] = '0'
+    return flags
+
+
 def validate_supply_traces(traces, mode):
     """Require every sampled layer in both pinned chunks; reject partial traces."""
     if mode not in ('forced-staged', 'transition-fallback'):
@@ -152,7 +162,7 @@ def main():
         private = Path(private_dir)
         for i, (mode, trace) in enumerate(plan):
             trial = env.copy()
-            trial.update(mode_flags('transition-fallback' if mode == 'forced-staged' else mode))
+            trial.update(supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
             trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
             trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
             log = private / f'{i}.log'
