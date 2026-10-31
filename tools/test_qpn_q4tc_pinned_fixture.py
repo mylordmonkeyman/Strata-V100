@@ -181,7 +181,7 @@ class PinnedGgmlFixture(unittest.TestCase):
                     tail=f32(TAILS[role]*TAIL_MULTIPLIERS[pattern])
                     qscaled=tuple(v*tail for v in dq) if mode=="tail" else dq
                     for x in probes[k]:
-                        expected=math.fsum(a*b for a,b in zip(src,x))
+                        expected=math.fsum(a*b for a,b in zip(src,x))*(tail if mode=="tail" else 1.0)
                         actual=math.fsum(a*b for a,b in zip(qscaled,x))
                         residuals.append(actual-expected)
                         reference.append(expected)
@@ -203,8 +203,8 @@ class PinnedGgmlFixture(unittest.TestCase):
                 qg=tuple(v*tg for v in dq_g) if mode=="tail" else dq_g
                 qu=tuple(v*tu for v in dq_u) if mode=="tail" else dq_u
                 for x in probes[2560]:
-                    g=math.fsum(a*b for a,b in zip(src_g,x))
-                    u=math.fsum(a*b for a,b in zip(src_u,x))
+                    g=math.fsum(a*b for a,b in zip(src_g,x))*(tg if mode=="tail" else 1.0)
+                    u=math.fsum(a*b for a,b in zip(src_u,x))*(tu if mode=="tail" else 1.0)
                     gq=math.fsum(a*b for a,b in zip(qg,x))
                     uq=math.fsum(a*b for a,b in zip(qu,x))
                     expected=_silu(g)*u
