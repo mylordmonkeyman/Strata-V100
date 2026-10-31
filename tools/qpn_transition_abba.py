@@ -19,6 +19,7 @@ MODEL_SHA = '1e124ee94b7c921a7c895d2898bfa4ddc2d8111f3fd3e8b94207759c363291a5'
 PROMPT_SHA = 'df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414'
 ORDER = ('both-off', 'transition-fallback', 'transition-fallback', 'both-off')
 SELECTIVE_ORDER = ('transition-fallback', 'selective-supply', 'selective-supply', 'transition-fallback')
+EARLY_STAGE_ORDER = ('selective-supply', 'early-stage', 'early-stage', 'selective-supply')
 
 
 def mode_flags(mode):
@@ -110,10 +111,11 @@ def evaluate_supply(summary, outputs):
 
 
 def selective_flags(mode):
-    if mode not in SELECTIVE_ORDER:
+    if mode not in (*SELECTIVE_ORDER, *EARLY_STAGE_ORDER):
         raise ValueError('invalid selective supply mode')
     flags = mode_flags('transition-fallback')
-    flags['STRATA_QPN_MMQ_SELECTIVE_SUPPLY'] = str(int(mode == 'selective-supply'))
+    flags['STRATA_QPN_MMQ_SELECTIVE_SUPPLY'] = str(int(mode != 'transition-fallback'))
+    flags['STRATA_QPN_MMQ_EARLY_STAGE'] = str(int(mode == 'early-stage'))
     return flags
 
 
@@ -129,13 +131,68 @@ def selective_accounting(raw, mode):
             or r['copies'] + r['skipped'] != r['entries'] or r['jobs'] > r['entries']
             or r['skipped_jobs'] > min(r['jobs'], r['skipped'])):
         raise ValueError('invalid selective accounting')
-    if mode == 'selective-supply':
+    if mode in ('selective-supply', 'early-stage'):
         if r['skipped'] <= 0 or r['skipped_bytes'] <= 0:
             raise ValueError('selective supply was not exercised')
     elif mode != 'transition-fallback' or r['skipped'] or r['skipped_bytes'] or r['skipped_jobs']:
         raise ValueError('baseline unexpectedly skipped transfers')
     return r
 
+
+
+def early_stage_accounting(raw, mode, supply):
+    """Allowlisted CPU-omission counters only; private raw logs never exported."""
+    if mode not in EARLY_STAGE_ORDER:
+        raise ValueError('unexpected early-stage mode')
+    pattern = (r'^strata qpn early-stage: chunk=(\d+) tokens=(\d+) '
+               r'cpu_jobs_omitted=(\d+) cpu_bytes_omitted=(\d+)$')
+    matches = re.findall(pattern, raw, re.M)
+    if mode == 'selective-supply':
+        if matches:
+            raise ValueError('baseline unexpectedly emitted early-stage counters')
+        return {'cpu_jobs_omitted': 0, 'cpu_bytes_omitted': 0}
+    if len(matches) != 1:
+        raise ValueError('missing or duplicate early-stage record')
+    chunk, tokens, jobs, amount = map(int, matches[0])
+    if (chunk != 0 or tokens != 1024 or jobs > supply['skipped_jobs']
+            or amount > supply['skipped_bytes']
+            or (jobs == 0) != (amount == 0)
+            or (jobs and amount != jobs * 2764816)):
+        raise ValueError('invalid or unmatched early-stage CPU omission')
+    return {'cpu_jobs_omitted': jobs, 'cpu_bytes_omitted': amount}
+
+
+def evaluate_early_stage(summary, outputs):
+    """Exploratory ABBA, NOT a qualified full-request speedup."""
+    if not evaluate(summary, outputs, EARLY_STAGE_ORDER):
+        return False
+    runs = summary['runs']
+    for metric in ('entries', 'copies', 'skipped', 'bytes', 'skipped_bytes',
+                   'jobs', 'skipped_jobs'):
+        vals = [row['selective_supply'][metric] for row in runs]
+        if metric in ('entries', 'jobs') and len(set(vals)) != 1:
+            summary['status'] = 'failed_mismatched_host_work'
+            return False
+        if metric in ('copies', 'skipped') and max(vals) - min(vals) > 16:
+            summary['status'] = 'failed_mismatched_H2D'
+            return False
+        if metric in ('bytes', 'skipped_bytes') and max(vals) - min(vals) > 16 * 2764816:
+            summary['status'] = 'failed_mismatched_H2D'
+            return False
+    omitted = [row['early_stage']['cpu_jobs_omitted'] for row in runs
+               if row['mode'] == 'early-stage']
+    summary['cpu_jobs_omitted'] = omitted
+    summary['cpu_bytes_omitted'] = [row['early_stage']['cpu_bytes_omitted']
+                                    for row in runs if row['mode'] == 'early-stage']
+    summary['prefill_latency_ratio'] = summary['median_prefill_speedup']
+    summary['ttft_latency_ratio'] = summary['median_ttft_speedup']
+    summary['exploratory_prefill_5pct_gate'] = bool(
+        min(omitted) > 0 and summary['median_prefill_speedup'] >= 1.0 / 0.95)
+    summary['full_request_performance_qualified'] = False
+    summary['status'] = ('early_stage_initial_screen_positive_unqualified'
+                         if summary['exploratory_prefill_5pct_gate'] else
+                         'early_stage_initial_screen_no_material_benefit')
+    return True
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -145,10 +202,12 @@ def main():
                    help='profile repeatable forced-staged and transition-fallback off/on controls')
     p.add_argument('--selective-abba', action='store_true',
                    help='same-stream-all ABBA of default-off routing-aware DMA skipping')
+    p.add_argument('--early-stage-abba', action='store_true',
+                   help='ABBA of MMQ selective H2D vs skipped CPU staging')
     a = p.parse_args()
-    if a.supply_profile and a.selective_abba:
+    if sum(map(bool, (a.supply_profile, a.selective_abba, a.early_stage_abba))) > 1:
         p.error('supply modes are mutually exclusive')
-    order = SELECTIVE_ORDER if a.selective_abba else ORDER
+    order = EARLY_STAGE_ORDER if a.early_stage_abba else SELECTIVE_ORDER if a.selective_abba else ORDER
     plan = supply_plan() if a.supply_profile else [(m, False) for m in order]
     a.report.mkdir(parents=True, exist_ok=True)
     a.state.mkdir(parents=True, exist_ok=True)
@@ -191,6 +250,16 @@ def main():
                        order=list(order))
         summary['limitations'] += ['experimental DMA scheduling; no full-model sanitizer or Graph qualification',
                                    'host staging jobs still drained; no skipped CPU reads or early routing prediction']
+    if a.early_stage_abba:
+        summary.update(schema=2,
+                       scope='MMQ-only first screen: H2D-only vs route-aware CPU staging skip, canonical weights',
+                       order=list(order), actual_qpn_executed=False,
+                       full_request_performance_qualified=False)
+        summary['limitations'] += [
+            'four fresh processes with uncontrolled page cache/clocks: no warm session',
+            'single 2047-token prompt, no longer-context or accepted-token quality gate',
+            'CPU staging omission does not prove exposed critical-path time saved',
+            'no CUDA Graph, Compute Sanitizer or broad model-quality qualification']
     report = a.report / 'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
@@ -201,7 +270,7 @@ def main():
         private = Path(private_dir)
         for i, (mode, trace) in enumerate(plan):
             trial = env.copy()
-            trial.update(selective_flags(mode) if a.selective_abba else
+            trial.update(selective_flags(mode) if (a.selective_abba or a.early_stage_abba) else
                          supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
             trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
             trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
@@ -232,7 +301,7 @@ def main():
                 summary['status'] = 'failed_safety'
                 save()
                 return 2
-            if mode in ('transition-fallback', 'selective-supply'):
+            if mode in ('transition-fallback', 'selective-supply', 'early-stage'):
                 try:
                     count = transition_bypass_count(raw)
                 except ValueError:
@@ -271,24 +340,35 @@ def main():
                 summary['status'] = 'failed_supply_trace_validation'
                 save()
                 return 2
-            if a.selective_abba:
+            if a.selective_abba or a.early_stage_abba:
                 try:
                     row['selective_supply'] = selective_accounting(raw, mode)
+                    if a.early_stage_abba:
+                        row['early_stage'] = early_stage_accounting(
+                            raw, mode, row['selective_supply'])
                 except ValueError:
                     summary['status'] = 'failed_selective_supply_accounting'
                     save()
                     return 2
+                if a.early_stage_abba and mode == 'early-stage' and not row['early_stage']['cpu_jobs_omitted']:
+                    # Opportunity absent at the first candidate; do not
+                    # spend a further two model starts on a zero-copy result.
+                    summary['status'] = 'stopped_zero_cpu_jobs_omitted'
+                    save()
+                    return 0
             outputs.append(v)
             save()
             print(f'MMQ ABBA {i+1}/4 {mode} completed', flush=True)
-        if a.selective_abba:
+        if a.selective_abba or a.early_stage_abba:
             counters = [r['selective_supply'] for r in summary['runs']]
             total_bytes = {r['bytes'] + r['skipped_bytes'] for r in counters}
             if len({r['entries'] for r in counters}) != 1 or len(total_bytes) != 1:
                 summary['status'] = 'failed_selective_unmatched_supply'
                 save()
                 return 2
-        ok = evaluate_supply(summary, outputs) if a.supply_profile else evaluate(summary, outputs, order)
+        ok = (evaluate_supply(summary, outputs) if a.supply_profile else
+              evaluate_early_stage(summary, outputs) if a.early_stage_abba else
+              evaluate(summary, outputs, order))
         save()
         return 0 if ok else 3
 

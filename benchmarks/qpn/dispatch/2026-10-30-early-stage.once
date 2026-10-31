@@ -1,0 +1,6 @@
+one-shot ABBA performance-first screen, 2026-10-30
+hypothesis: skip host preparation only for already-published unrouted expert jobs
+arms: canonical-MMQ selective H2D on in both, STRATA_QPN_MMQ_EARLY_STAGE=0/1
+guards: existing gpu.lock; idle sm70; pinned CUDA12.8; existing model/prompt SHA
+no second resident representation; no conversion; only aggregate evidence exported
+do not modify this marker to rerun without a separately qualified new hypothesis
