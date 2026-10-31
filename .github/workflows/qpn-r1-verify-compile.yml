@@ -3,6 +3,8 @@ on:
   push:
     branches: ['qpn/prepacked-stream']
     paths:
+      - 'src/prefill/prefill.cpp'
+      - 'src/prefill/qpn_mmq_early_stage.hpp'
       - 'src/core/verify.cpp'
       - 'include/strata/core/verify.hpp'
       - 'cmake/volta_qpn.cmake'
