@@ -93,3 +93,43 @@ prototype. Keep R1 `--stage feasibility` as UNKNOWN until there is
 independent, representative exposed-time evidence sufficient to populate the
 existing bounded gate without converting route shares into time. No repeated
 QPN/ABBA/decode GPU experiments or automatic Q4TC pivot are justified.
+
+
+## Cross-phase full-prefill ceiling from the 2026-10-31 diagnostic (host-only)
+
+This is a **new conditional arithmetic constraint**, not a new GPU measurement,
+QPN performance result, actual R1 exposed-time attribution, or approval to
+resume a stopped subtrack. It combines the pre-existing isolated resident
+packed-fixture **1.377x** speed-factor scenario with the completed
+[matched-H2D original-MMQ diagnostic](qpn-mmq-early-stage-repeat-2026-10-31.md)
+([run 41180483211](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41180483211),
+source `b0fbc2e`). The latter's **control arm A** had a 17.08525-second
+median prefill and 84.5988-second median fresh-process wall time on one
+2,047-prefill/128-requested-decode workload. It deliberately forced route
+publication before H2D, losing normal async lookahead; it is **not** the
+production async or warm-engine MMQ baseline. The two medians need not
+come from the same invocation, so this is a sensitivity calculation rather
+than a paired latency bound.
+
+If the isolated 1.377x factor hypothetically applied to **every millisecond
+of that diagnostic's prefill**, with zero new overhead and no other phase
+changed, the maximum modeled wall reduction would be
+`17.08525 * (1 - 1/1.377) = 4.67766 s`, or **5.529%** of the
+84.5988-second process. Reaching 5% would require at least
+`(0.05 * 84.5988) / 4.67766 = 90.43%` of **all prefill time** to
+be accelerated by that effective factor. Any newly exposed overhead of
+**0.44772 seconds** (0.529% of full-process wall) or more would exhaust
+this *all-prefill* zero-overhead margin. Actual 33–512-row eligible QPN
+compute is only a subset of prefill; no eligible-time fraction has been
+measured. The existing 3.132% held-out route share cannot be substituted
+for it. The 1.377x factor is from an isolated resident fixture and has
+never been demonstrated on full-model eligible time.
+
+**Decision:** this tighter diagnostic-policy hurdle reinforces the
+requirement to measure *eligible exposed critical-path time* before any
+resident-QPN GPU prototype. It does **not** prove a 5% gain impossible
+under normal async operation, a warm serving session, longer prompts, or
+an alternative Q4TC format; those have different phase fractions and
+unmeasured effective speed factors. Static packed admission and early
+CPU staging remain STOPPED; R1 exposed-time remains UNKNOWN. No new GPU
+work, cache, model conversion, dual-format VRAM, or production change.
