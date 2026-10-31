@@ -102,6 +102,9 @@ void run(int tokens, int columns, bool scattered) {
         ck(cudaMemcpyAsync(slots.ptr, order, sizeof(order), cudaMemcpyHostToDevice, stream.value));
         ck(cudaMemcpyAsync(source_rows.ptr, inverse, sizeof(inverse),
                            cudaMemcpyHostToDevice, stream.value));
+        // The temporary host mapping arrays are stack-allocated. Finish their
+        // H2D transfers before they go out of scope (not a timing benchmark).
+        ck(cudaStreamSynchronize(stream.value));
         mmq::quantize_scatter(static_cast<const float*>(x.ptr),
                               static_cast<const std::int32_t*>(slots.ptr),
                               static_cast<const std::int32_t*>(source_rows.ptr), packed.ptr,
@@ -131,8 +134,11 @@ void run(int tokens, int columns, bool scattered) {
         if (got[i] != 0xa5a5) throw std::runtime_error("D4 stage wrote past output");
     if (scattered) {
         const auto segment = [&](int index) { return got.data() + std::size_t(index) * columns; };
+        // token0 -> compact 0/3; token1 -> 2/4; token2 -> 1/5.
         if (!std::equal(segment(0), segment(0) + columns, segment(3)) ||
-            !std::equal(segment(1), segment(1) + columns, segment(4)))
+            !std::equal(segment(2), segment(2) + columns, segment(4)) ||
+            !std::equal(segment(1), segment(1) + columns, segment(5)) ||
+            std::equal(segment(0), segment(0) + columns, segment(2)))
             throw std::runtime_error("ggml scatter D4 duplicate-source mapping changed");
     }
 }
