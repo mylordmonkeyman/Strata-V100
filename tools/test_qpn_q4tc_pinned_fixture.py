@@ -60,6 +60,32 @@ def floats(h,k):
 def rmse(a,b):
     return math.sqrt(math.fsum((x-y)**2 for x,y in zip(a,b))/len(a))
 
+
+def _rms(values):
+    if not values:
+        raise ValueError("empty synthetic numerical sample")
+    return math.sqrt(math.fsum(v*v for v in values)/len(values))
+
+def _activation(k, probe):
+    """Deterministic synthetic activation, unit L2 norm, no private prompts."""
+    v=[]
+    for i in range(k):
+        a=math.sin((i+1)*(probe+3)*0.071)+0.4*math.cos((i+1)*(probe+5)*0.037)
+        if probe%3==1:
+            a*=(-1 if (i//16)%2 else 1)
+        elif probe%3==2 and (i//32+probe)%4:
+            a=0.
+        v.append(a)
+    norm=math.sqrt(math.fsum(t*t for t in v))
+    if norm==0:raise ValueError("degenerate synthetic activation")
+    return tuple(t/norm for t in v)
+
+def _silu(value):
+    if value>=0:
+        return value/(1+math.exp(-value))
+    e=math.exp(value)
+    return value*e/(1+e)
+
 class PinnedGgmlFixture(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("QPN_Q4TC_GGML_FIXTURE"),
                          "pinned ggml fixture executable not built")
@@ -139,4 +165,55 @@ class PinnedGgmlFixture(unittest.TestCase):
                   f"worst_tail_relative_RMSE={max(preserved_errors):.6g}")
         self.assertGreater(mismatched_iq4,0,
                            "pinned IQ4_NL production/reference distinction disappeared")
+
+        # Activation-aware, same-source QAD->Q4 screen. These are synthetic
+        # deterministic inputs, not model activations, logits or quality claims.
+        # Unlike weight RMSE, this tests dot products and the nonlinear gate/up
+        # subgraph, preserving FP32 tails at the correct arithmetic boundary.
+        probes={k:tuple(_activation(k,p) for p in range(8)) for k in (640,2560)}
+        for role,k in WIDTHS.items():
+            results={}
+            for mode in ("tail","folded"):
+                residuals=[]
+                reference=[]
+                for pattern in range(4):
+                    src,dq,_,_,_=rows[(role,pattern,mode)]
+                    tail=f32(TAILS[role]*TAIL_MULTIPLIERS[pattern])
+                    qscaled=tuple(v*tail for v in dq) if mode=="tail" else dq
+                    for x in probes[k]:
+                        expected=math.fsum(a*b for a,b in zip(src,x))
+                        actual=math.fsum(a*b for a,b in zip(qscaled,x))
+                        residuals.append(actual-expected)
+                        reference.append(expected)
+                ratio=_rms(residuals)/max(_rms(reference),1e-12)
+                self.assertTrue(math.isfinite(ratio))
+                self.assertGreater(ratio,0)
+                results[mode]=ratio
+            print(f"Q4TC synthetic activation {role}: "
+                  f"tail_projection_rel_RMSE={results['tail']:.6g} "
+                  f"folded_projection_rel_RMSE={results['folded']:.6g}")
+        for mode in ("tail","folded"):
+            residuals=[]
+            reference=[]
+            for pattern in range(4):
+                src_g,dq_g,_,_,_=rows[("gate",pattern,mode)]
+                src_u,dq_u,_,_,_=rows[("up",pattern,mode)]
+                tg=f32(TAILS["gate"]*TAIL_MULTIPLIERS[pattern])
+                tu=f32(TAILS["up"]*TAIL_MULTIPLIERS[pattern])
+                qg=tuple(v*tg for v in dq_g) if mode=="tail" else dq_g
+                qu=tuple(v*tu for v in dq_u) if mode=="tail" else dq_u
+                for x in probes[2560]:
+                    g=math.fsum(a*b for a,b in zip(src_g,x))
+                    u=math.fsum(a*b for a,b in zip(src_u,x))
+                    gq=math.fsum(a*b for a,b in zip(qg,x))
+                    uq=math.fsum(a*b for a,b in zip(qu,x))
+                    expected=_silu(g)*u
+                    actual=_silu(gq)*uq
+                    residuals.append(actual-expected)
+                    reference.append(expected)
+            ratio=_rms(residuals)/max(_rms(reference),1e-12)
+            self.assertTrue(math.isfinite(ratio))
+            self.assertGreater(ratio,0)
+            print(f"Q4TC synthetic SwiGLU {mode}: relative_RMSE={ratio:.6g} "
+                  "(one hidden-unit gate/up proxy; not a full FFN)")
 if __name__=="__main__":unittest.main()
