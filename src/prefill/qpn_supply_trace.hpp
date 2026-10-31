@@ -2,6 +2,13 @@
 // Experimental, aggregate-only diagnostics. No expert bytes or device arrays
 // are read back. Every wrapper executes the original operation exactly once.
 #include <cuda_runtime.h>
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL)
+#include "qpn_r0_intervals.hpp"
+#include <array>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -14,16 +21,27 @@ class QpnSupplyTrace {
     struct Span { int64_t layer; size_t bytes; cudaEvent_t begin = nullptr, end = nullptr; };
     struct Routes { int64_t layer, groups, resident, rows, resident_rows; };
     bool active_ = false;
+    bool r0_aggregate_ = false;  // explicit opt-in: all instrumented layers, aggregate-only output
+    std::atomic<std::size_t> event_pairs_{0};
     std::atomic<bool> failed_{false};
     cudaEvent_t origin_ = nullptr;
     // Separate producer and consumer containers: only inspect after issuer join.
     std::vector<Span> copies_, reuse_, waits_, gathers_, products_;
     std::vector<Routes> routes_;
-    static bool sampled(int64_t layer) { return layer == 0 || layer == 24 || layer == 47; }
+    bool sampled(int64_t layer) const {
+        return r0_aggregate_ ? (layer >= 0 && layer < 48) :
+               (layer == 0 || layer == 24 || layer == 47);
+    }
     bool ok(cudaError_t e) { if (e != cudaSuccess) failed_.store(true); return e == cudaSuccess; }
     template<class F> cudaError_t measure(std::vector<Span>& spans, int64_t l, size_t bytes,
                                           cudaStream_t s, F f) {
         if (!active_ || !sampled(l) || failed_.load()) return f();
+        // Explicit bounded diagnostic: never let all-layer event recording grow
+        // without limit. On limit/failure the original operation still runs.
+        if (r0_aggregate_ && event_pairs_.fetch_add(1, std::memory_order_relaxed) >= 32768) {
+            failed_.store(true);
+            return f();
+        }
         Span p{l, bytes};
         if (!ok(cudaEventCreate(&p.begin)) || !ok(cudaEventCreate(&p.end))) {
             if (p.begin) cudaEventDestroy(p.begin);
@@ -36,10 +54,70 @@ class QpnSupplyTrace {
         spans.push_back(p);
         return e;
     }
+    // This branch emits only whole-chunk category envelopes and aggregate
+    // metadata. Neither CUDA event envelopes nor their overlap establishes
+    // exposed eligible compute, PCIe saturation, or request latency.
+    bool report_r0_aggregate() {
+        std::array<std::vector<r0::Window>, 5> categories;
+        std::array<bool, 48> observed{};
+        std::array<bool, 48> product_observed{};
+        std::uint64_t h2d_bytes = 0;
+        double earliest = std::numeric_limits<double>::infinity();
+        double latest = -std::numeric_limits<double>::infinity();
+        bool any = false;
+        int kind = 0;
+        for (auto* v : {&copies_, &reuse_, &waits_, &gathers_, &products_}) {
+            for (const auto& p : *v) {
+                if (p.layer < 0 || p.layer >= 48) return false;
+                float a = 0, b = 0;
+                if (!ok(cudaEventElapsedTime(&a, origin_, p.begin)) ||
+                    !ok(cudaEventElapsedTime(&b, origin_, p.end)) ||
+                    !std::isfinite(a) || !std::isfinite(b) || b < a)
+                    return false;
+                categories[std::size_t(kind)].push_back({a, b});
+                observed[std::size_t(p.layer)] = true;
+                if (kind == 4) product_observed[std::size_t(p.layer)] = true;
+                if (kind == 0) {
+                    if (p.bytes > std::numeric_limits<std::uint64_t>::max() - h2d_bytes)
+                        return false;
+                    h2d_bytes += p.bytes;
+                }
+                earliest = std::min(earliest, double(a));
+                latest = std::max(latest, double(b));
+                any = true;
+            }
+            ++kind;
+        }
+        const double h2d = r0::duration(categories[0]);
+        const double products = r0::duration(categories[4]);
+        auto waits = categories[1];
+        waits.insert(waits.end(), categories[2].begin(), categories[2].end());
+        const double wait = r0::duration(waits);
+        const double gather = r0::duration(categories[3]);
+        const double overlap = r0::overlap(categories[0], categories[4]);
+        const double window = any ? latest - earliest : 0.0;
+        const int observed_layers = int(std::count(observed.begin(), observed.end(), true));
+        const int product_layers = int(std::count(product_observed.begin(), product_observed.end(), true));
+        const std::size_t total_events = copies_.size() + reuse_.size() + waits_.size() +
+                                         gathers_.size() + products_.size();
+        // No raw intervals, layer identities, route counts or private content.
+        std::fprintf(stderr,
+            "strata qpn-r0: {\"schema\":1,\"scope\":\"all_instrumented_supply_callbacks_not_complete_request\",\"instrumented\":true,"
+            "\"event_pairs\":%zu,\"observed_layers\":%d,\"product_layers\":%d,"
+            "\"h2d_operations\":%zu,\"h2d_bytes\":%llu,"
+            "\"trace_window_ms\":%.6f,\"h2d_envelope_ms\":%.6f,"
+            "\"products_envelope_ms\":%.6f,\"wait_envelope_ms\":%.6f,"
+            "\"gather_envelope_ms\":%.6f,\"h2d_products_overlap_ms\":%.6f}\n",
+            total_events, observed_layers, product_layers, copies_.size(),
+            (unsigned long long) h2d_bytes, window, h2d, products, wait, gather, overlap);
+        return true;
+    }
 public:
     QpnSupplyTrace(bool single_gpu, cudaStream_t compute, cudaStream_t copy) {
         const char* e = std::getenv("STRATA_QPN_SUPPLY_TRACE");
-        active_ = single_gpu && e && e[0] == '1';
+        const char* r0 = std::getenv("STRATA_QPN_SUPPLY_R0_AGGREGATE");
+        r0_aggregate_ = single_gpu && r0 && r0[0] == '1';
+        active_ = single_gpu && (r0_aggregate_ || (e && e[0] == '1'));
         if (!active_) return;
         cudaStreamCaptureStatus a, b;
         if (!ok(cudaStreamIsCapturing(compute, &a)) || !ok(cudaStreamIsCapturing(copy, &b)) ||
@@ -71,7 +149,8 @@ public:
         measure(products_, l, 0, s, [&] { f(); return cudaSuccess; });
     }
     template<class Count, class IsResident> void routes(int64_t l, int experts, Count count, IsResident resident) {
-        if (!active_ || !sampled(l)) return;
+        // No route counts or identities in the R0 aggregate path.
+        if (!active_ || r0_aggregate_ || !sampled(l)) return;
         Routes r{l, 0, 0, 0, 0};
         for (int e = 0; e < experts; ++e) if (count(e) > 0) {
             ++r.groups; r.rows += count(e);
@@ -95,6 +174,7 @@ public:
             ok(cudaEventElapsedTime(&b, origin_, p.end));
         }
         if (failed_.load()) return false;
+        if (r0_aggregate_) return report_r0_aggregate();
         std::fprintf(stderr, "strata qpn-supply: {\"schema\":1,\"chunk\":%lld,\"tokens\":%lld,\"ring\":%d,\"stream_all\":%s,\"instrumented\":true,\"layers\":[",
                      (long long) chunk, (long long) tokens, ring, stream_all ? "true" : "false");
         bool first_layer = true;

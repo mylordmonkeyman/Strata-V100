@@ -1,0 +1,61 @@
+"""Synthetic-only parser tests: no private R0/GPU logs needed."""
+import json
+import unittest
+from qpn_r0_aggregate import PREFIX, SCOPE, inspect_record, scrub_log
+
+
+def record(**changes):
+    x = dict(schema=1, scope=SCOPE, instrumented=True,
+             event_pairs=9, observed_layers=3, product_layers=2,
+             h2d_operations=4, h2d_bytes=4*2764816,
+             trace_window_ms=14.0, h2d_envelope_ms=8.0,
+             products_envelope_ms=7.0, wait_envelope_ms=1.0,
+             gather_envelope_ms=3.0, h2d_products_overlap_ms=2.0)
+    x.update(changes)
+    return x
+
+
+class R0AggregateTests(unittest.TestCase):
+    def test_aggregates_and_scope(self):
+        raw = ('other private log line\n' + PREFIX + json.dumps(record()) + '\n' +
+               PREFIX + json.dumps(record(event_pairs=15)) + '\n')
+        report = scrub_log(raw)
+        self.assertEqual(report['chunk_records'], 2)
+        self.assertEqual(report['event_pairs'], 24)
+        self.assertEqual(report['summed_per_chunk_envelopes_ms']['trace_window_ms'], 28.)
+        self.assertIsNone(report['eligible_exposed_critical_path_ms'])
+        self.assertEqual(report['r1_full_request_feasibility'], 'UNKNOWN')
+        self.assertNotIn('private log line', json.dumps(report))
+        self.assertNotIn('routes', json.dumps(report))
+
+    def test_fail_closed_unknown_or_private_fields(self):
+        for extra in ('routes', 'prompt', 'logits', 'layer', 'raw_intervals', 'model_path'):
+            with self.subTest(field=extra), self.assertRaises(ValueError):
+                inspect_record(record(**{extra: 'secret'}))
+        with self.assertRaises(ValueError):
+            scrub_log('strata unrelated: {}')
+
+    def test_fail_closed_wrong_scope_and_invalid_events(self):
+        for update in (dict(scope='full model speedup'), dict(instrumented=False),
+                       dict(schema=2), dict(h2d_envelope_ms=float('nan')),
+                       dict(trace_window_ms=1.0),
+                       dict(h2d_products_overlap_ms=8.0),
+                       dict(h2d_operations=-1), dict(observed_layers=49),
+                       dict(product_layers=4), dict(h2d_operations=0),
+                       dict(event_pairs=1)):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                inspect_record(record(**update))
+
+    def test_zero_event_record_and_boolean_rejected(self):
+        empty = record(event_pairs=0, observed_layers=0, product_layers=0,
+                       h2d_operations=0, h2d_bytes=0, trace_window_ms=0.,
+                       h2d_envelope_ms=0., products_envelope_ms=0.,
+                       wait_envelope_ms=0., gather_envelope_ms=0.,
+                       h2d_products_overlap_ms=0.)
+        self.assertEqual(inspect_record(empty)['event_pairs'], 0)
+        with self.assertRaises(ValueError):
+            inspect_record(record(h2d_bytes=True))
+
+
+if __name__ == '__main__':
+    unittest.main()
