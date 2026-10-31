@@ -77,5 +77,25 @@ int main() {
         require(qpn_mmq_early_stage_phase(false,false,true,false,false)
                     == EarlyStageDecision::Inactive, "default staged tail unchanged");
     }
+    // Matched-H2D diagnostic: only asynchronous, host-published selective
+    // routing is allowed. Never block the inline issuer on its own router.
+    {
+        using strata::prefill::detail::EarlyStageDecision;
+        using strata::prefill::detail::qpn_mmq_matched_h2d_phase;
+        require(qpn_mmq_matched_h2d_phase(true,true,false,true,true,true,true)
+                    == EarlyStageDecision::Active, "matched async route should activate");
+        require(qpn_mmq_matched_h2d_phase(true,false,true,false,false,false,false)
+                    == EarlyStageDecision::Inactive, "matched staged tail must be inert");
+        require(qpn_mmq_matched_h2d_phase(true,false,false,true,true,true,true)
+                    == EarlyStageDecision::Invalid, "matched standalone staged must reject");
+        require(qpn_mmq_matched_h2d_phase(true,true,false,true,true,false,true)
+                    == EarlyStageDecision::Invalid, "matched inline issuer deadlock guard");
+        require(qpn_mmq_matched_h2d_phase(true,true,false,true,true,true,false)
+                    == EarlyStageDecision::Invalid, "matched non-publishing path guard");
+        require(qpn_mmq_matched_h2d_phase(true,true,false,true,false,true,true)
+                    == EarlyStageDecision::Invalid, "matched selective skipping required");
+        require(qpn_mmq_matched_h2d_phase(false,true,false,false,false,false,false)
+                    == EarlyStageDecision::Inactive, "matched default off");
+    }
     std::puts("Early MMQ staging predicate: all host tests passed");
 }

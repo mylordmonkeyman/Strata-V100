@@ -3268,7 +3268,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // fences and drain their host staging jobs, but omit their H2D only.
         bool mmq_supply_diag = false, mmq_skip = false;
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
-        bool mmq_early_stage = false;
+        bool mmq_early_stage = false, mmq_matched_h2d = false;
         if (const char* v = std::getenv("STRATA_QPN_MMQ_SELECTIVE_SUPPLY"); v && stream_all) {
             int major = 0, minor = 0;
             const char* mode = std::getenv("STRATA_PREFILL_NVFP4");
@@ -3302,6 +3302,27 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             return false;
         }
         mmq_early_stage = early_phase == detail::EarlyStageDecision::Active;
+        // A/B measurement control only: freeze H2D decisions until the
+        // current layer's host routing is published in BOTH arms. This loses
+        // speculative copy lead time deliberately; it must not be presented
+        // as the original early-stage performance result.
+        const bool matched_requested = [] {
+            const char* v = std::getenv("STRATA_QPN_MMQ_MATCHED_H2D");
+            return v && std::atoi(v) != 0;
+        }();
+        const char* issuer_env = std::getenv("STRATA_PREFILL_ISSUER");
+        const bool async_issuer = !issuer_env || std::atoi(issuer_env) != 0;
+        const bool host_route_publication =
+            matched_requested &&
+            !fused::native_supported((int) GGML_TYPE_NVFP4, (int) GGML_TYPE_NVFP4);
+        const auto matched_phase = detail::qpn_mmq_matched_h2d_phase(
+            matched_requested, stream_all, staged_after_stream_all,
+            mmq_supply_diag, mmq_skip, async_issuer, host_route_publication);
+        if (matched_phase == detail::EarlyStageDecision::Invalid) {
+            err = "experimental matched MMQ H2D requires async issuer and host-published selective routing";
+            return false;
+        }
+        mmq_matched_h2d = matched_phase == detail::EarlyStageDecision::Active;
 #endif
         uint64_t supply_copies = 0, supply_skipped = 0, supply_bytes = 0, supply_skipped_bytes = 0;
         uint64_t supply_jobs = 0, supply_skipped_jobs = 0;
@@ -3497,6 +3518,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         std::this_thread::yield();
                     }
                     const StreamEntry& en = seq[idx];
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                    if (mmq_matched_h2d) {
+                        // No unpublished speculative H2D: route-selected
+                        // expert copies now match across identical inputs.
+                        // Cancellation must release the issuer on errors.
+                        while (routing_ready.load(std::memory_order_acquire) < (int64_t) en.l) {
+                            if (a_stop.load(std::memory_order_acquire)) return;
+                            std::this_thread::yield();
+                        }
+                    }
+#endif
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);

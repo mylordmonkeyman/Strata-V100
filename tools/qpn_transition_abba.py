@@ -204,10 +204,14 @@ def main():
                    help='same-stream-all ABBA of default-off routing-aware DMA skipping')
     p.add_argument('--early-stage-abba', action='store_true',
                    help='ABBA of MMQ selective H2D vs skipped CPU staging')
+    p.add_argument('--early-stage-matched-abba', action='store_true',
+                   help='same ABBA with published-route H2D (diagnostic only)')
     a = p.parse_args()
-    if sum(map(bool, (a.supply_profile, a.selective_abba, a.early_stage_abba))) > 1:
+    early_abba = a.early_stage_abba or a.early_stage_matched_abba
+    if sum(map(bool, (a.supply_profile, a.selective_abba, a.early_stage_abba,
+                      a.early_stage_matched_abba))) > 1:
         p.error('supply modes are mutually exclusive')
-    order = EARLY_STAGE_ORDER if a.early_stage_abba else SELECTIVE_ORDER if a.selective_abba else ORDER
+    order = EARLY_STAGE_ORDER if early_abba else SELECTIVE_ORDER if a.selective_abba else ORDER
     plan = supply_plan() if a.supply_profile else [(m, False) for m in order]
     a.report.mkdir(parents=True, exist_ok=True)
     a.state.mkdir(parents=True, exist_ok=True)
@@ -250,7 +254,7 @@ def main():
                        order=list(order))
         summary['limitations'] += ['experimental DMA scheduling; no full-model sanitizer or Graph qualification',
                                    'host staging jobs still drained; no skipped CPU reads or early routing prediction']
-    if a.early_stage_abba:
+    if early_abba:
         summary.update(schema=2,
                        scope='MMQ-only first screen: H2D-only vs route-aware CPU staging skip, canonical weights',
                        order=list(order), actual_qpn_executed=False,
@@ -260,6 +264,12 @@ def main():
             'single 2047-token prompt, no longer-context or accepted-token quality gate',
             'CPU staging omission does not prove exposed critical-path time saved',
             'no CUDA Graph, Compute Sanitizer or broad model-quality qualification']
+        if a.early_stage_matched_abba:
+            summary['scope'] = ('MMQ-only diagnostic: both arms wait for current-layer '
+                                'route publication before H2D, canonical weights')
+            summary['limitations'] += [
+                'forced publication wait removes speculative H2D lookahead in both arms',
+                'matched-H2D diagnostic cannot establish speedup of original asynchronous policy']
     report = a.report / 'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
@@ -270,10 +280,12 @@ def main():
         private = Path(private_dir)
         for i, (mode, trace) in enumerate(plan):
             trial = env.copy()
-            trial.update(selective_flags(mode) if (a.selective_abba or a.early_stage_abba) else
+            trial.update(selective_flags(mode) if (a.selective_abba or early_abba) else
                          supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
             trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
             trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
+            if a.early_stage_matched_abba:
+                trial['STRATA_QPN_MMQ_MATCHED_H2D'] = '1'
             log = private / f'{i}.log'
             dump = private / f'{i}.f32'
             trial['STRATA_DUMP_FIRST_LOGITS'] = str(dump)
@@ -293,7 +305,7 @@ def main():
             save()
             if code:
                 row['startup_diagnostics'] = safe_failure_diagnostics(log)
-                if a.early_stage_abba:
+                if early_abba:
                     # Fixed source-controlled phrases only: no raw log lines,
                     # layer/expert IDs, paths, logits or other private content.
                     private_text = log.read_text(errors='replace')
@@ -351,17 +363,17 @@ def main():
                 summary['status'] = 'failed_supply_trace_validation'
                 save()
                 return 2
-            if a.selective_abba or a.early_stage_abba:
+            if a.selective_abba or early_abba:
                 try:
                     row['selective_supply'] = selective_accounting(raw, mode)
-                    if a.early_stage_abba:
+                    if early_abba:
                         row['early_stage'] = early_stage_accounting(
                             raw, mode, row['selective_supply'])
                 except ValueError:
                     summary['status'] = 'failed_selective_supply_accounting'
                     save()
                     return 2
-                if a.early_stage_abba and mode == 'early-stage' and not row['early_stage']['cpu_jobs_omitted']:
+                if early_abba and mode == 'early-stage' and not row['early_stage']['cpu_jobs_omitted']:
                     # Opportunity absent at the first candidate; do not
                     # spend a further two model starts on a zero-copy result.
                     summary['status'] = 'stopped_zero_cpu_jobs_omitted'
@@ -370,7 +382,7 @@ def main():
             outputs.append(v)
             save()
             print(f'MMQ ABBA {i+1}/4 {mode} completed', flush=True)
-        if a.selective_abba or a.early_stage_abba:
+        if a.selective_abba or early_abba:
             counters = [r['selective_supply'] for r in summary['runs']]
             total_bytes = {r['bytes'] + r['skipped_bytes'] for r in counters}
             if len({r['entries'] for r in counters}) != 1 or len(total_bytes) != 1:
@@ -378,7 +390,7 @@ def main():
                 save()
                 return 2
         ok = (evaluate_supply(summary, outputs) if a.supply_profile else
-              evaluate_early_stage(summary, outputs) if a.early_stage_abba else
+              evaluate_early_stage(summary, outputs) if early_abba else
               evaluate(summary, outputs, order))
         save()
         return 0 if ok else 3

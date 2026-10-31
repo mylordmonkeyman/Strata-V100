@@ -23,6 +23,21 @@ constexpr EarlyStageDecision qpn_mmq_early_stage_phase(
     return staged_after_stream_all ? EarlyStageDecision::Inactive
                                    : EarlyStageDecision::Invalid;
 }
+// Diagnostic only: make H2D selection depend on published routing rather
+// than issuer timing. Requires the asynchronous issuer: an inline issuer
+// cannot wait here before the main thread computes/publishes the route.
+// On a staged tail this request-wide opt-in is inert, as for early staging.
+constexpr EarlyStageDecision qpn_mmq_matched_h2d_phase(
+        bool requested, bool stream_all, bool staged_after_stream_all,
+        bool selective_mmq, bool skip_unrouted, bool async_issuer,
+        bool host_route_publication) {
+    if (!requested) return EarlyStageDecision::Inactive;
+    if (stream_all)
+        return (selective_mmq && skip_unrouted && async_issuer && host_route_publication)
+            ? EarlyStageDecision::Active : EarlyStageDecision::Invalid;
+    return staged_after_stream_all ? EarlyStageDecision::Inactive
+                                   : EarlyStageDecision::Invalid;
+}
 inline bool qpn_mmq_early_stage_skip(const std::atomic<int64_t>& published_layer,
                                      int64_t layer, const bool* routed) {
     if (!routed || layer < 0) return false;
