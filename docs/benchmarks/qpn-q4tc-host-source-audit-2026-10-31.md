@@ -137,3 +137,46 @@ SHA-locked QAD checkpoint sample and independent end-to-end quality
 evidence are still required. The Q4-tail ABI/CPU fastpath bypass is
 unfixed; no Q4TC GPU prototype, runtime ABI change, dual-format VRAM
 residency or stopped-subtrack rerun is authorized by this addition.
+
+## Activation-weighted Q4 numerical screen (synthetic only; 2026-10-31)
+
+**Validated source:** [`51ca24f2`](https://github.com/mylordmonkeyman/Strata-V100/commit/51ca24f2f90a3a17cc9dedfc9742f8ba5673ed09).
+[Standalone CI 41206018756](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41206018756)
+**PASSED** (196 general host tests, separately executed pinned-ggml fixture,
+CUDA **compile-only**). The first implementation `ac9f24b` mistakenly
+omitted the FP32 tail on the QAD reference in the activation screen; the
+corrected commit `51ca24f2` applies the tail to both reference and
+tail-preserved Q4 candidate at the appropriate post-projection boundary.
+**Use only the corrected run's numerical values.**
+
+The existing 24 source-locked synthetic encoded-NVFP4-to-Q4 fixture records
+now also exercise eight deterministic, unit-L2, **synthetic** activation
+vectors per projection and encoded pattern (four patterns, two Q4 tail
+strategies). It compares original QAD-reconstructed FP32 dot products to
+pinned-ggml Q4_K/IQ4_NL dequantized dot products, including a one-hidden-unit
+gate/up SwiGLU proxy. No actual model activations, private prompts, logits,
+native GPU kernels or inference runs were involved.
+
+| Synthetic calculation | Preserved FP32 tail relative output RMSE | Folded-tail relative output RMSE |
+|---|---:|---:|
+| Gate Q4_K dot | 70.5737% | 70.5903% |
+| Up Q4_K dot | 24.3663% | 24.3741% |
+| Down IQ4_NL dot | 12.4240% | 12.4213% |
+| One-hidden-unit SwiGLU proxy | 16.6090% | 16.6448% |
+
+These are RMS error divided by RMS **reference output** over the synthetic
+activation probes, **not** relative weight RMSE, per-token KL, full FFN
+accuracy or model quality. In particular, structured activation correlations
+and small reference dot products can magnify normalized error; the gate's
+70.6% synthetic projection error must **not** be projected onto actual
+Qwen3.8 quality. The earlier ~8–9% weight reconstruction RMSE therefore
+does **not** establish an activation/output-error bound. Tail folding did
+not materially improve these specific synthetic probes, but this is not
+a universal finding or a substitute for real-checkpoint testing.
+
+**Decision unchanged:** Q4-0 remains PARTIAL and R1 exposed critical-path
+feasibility UNKNOWN. A SHA-verified *read-only* real-QAD expert fixture,
+consistent Q4 FP32-tail consumers, full-model quality, and a separate
+single-representation performance gate are still missing. Do not start
+a Q4 GPU prototype, model conversion/cache, or stopped QPN/early-staging
+experiments from these synthetic results.
