@@ -12,6 +12,7 @@ import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).parent))
 from qpn_q4tc_block_oracle import decode_row
+from qpn_q4tc_nvfp4_oracle import decode_nvfp4_row
 
 TAILS={"gate":1.25,"up":0.5,"down":2.0}
 WIDTHS={"gate":2560,"up":2560,"down":640}
@@ -25,6 +26,17 @@ def synthetic(k,seed):
         scale=(1+(s&7)/8)*2**(((s>>3)&15)-7)
         out.append(f32(E2M1[code]*scale))
     return out
+def encoded_qad(k,seed):
+    out=bytearray()
+    for b in range(k//64):
+        out.extend(0x28+((b*4+s+seed*2)%9)*3 for s in range(4))
+        for s in range(4):
+            i=b*64+s*16
+            for j in range(8):
+                lo=((i+j)*7+((i+j)//16)*3+seed*5)&15
+                hi=((i+j+8)*7+((i+j+8)//16)*3+seed*5)&15
+                out.append(lo|(hi<<4))
+    return bytes(out)
 def floats(h,k):
     raw=bytes.fromhex(h)
     if len(raw)!=k*4:raise ValueError("bad synthetic IPC length")
@@ -42,17 +54,24 @@ class PinnedGgmlFixture(unittest.TestCase):
         rows={}
         for line in r.stdout.splitlines():
             f=line.split()
-            self.assertEqual(len(f),8)
-            role,mode,kt,ref,src_h,q_h,qref_h,dq_h=f
+            self.assertEqual(len(f),10)
+            role,mode,kt,ref,src_h,q_h,qref_h,dq_h,qad_h,qad_dq_h=f
             self.assertIn(role,TAILS)
             self.assertIn(mode,("tail","folded"))
             k=int(kt)
             self.assertEqual(k,WIDTHS[role])
             self.assertNotIn((role,mode),rows)
+            seed=("gate","up","down").index(role)
+            qad=bytes.fromhex(qad_h)
+            self.assertEqual(len(qad),k//64*36)
+            self.assertEqual(qad,encoded_qad(k,seed))
+            original=floats(qad_dq_h,k)
+            self.assertEqual(original,decode_nvfp4_row(qad,k),
+                             "independent NVFP4 decoder disagrees with pinned ggml")
+            self.assertEqual(original,tuple(synthetic(k,seed)))
             src=floats(src_h,k)
-            expected=synthetic(k,("gate","up","down").index(role))
-            if mode=="folded":expected=[f32(v*TAILS[role]) for v in expected]
-            self.assertEqual(src,tuple(expected))
+            expected=original if mode=="tail" else tuple(f32(v*TAILS[role]) for v in original)
+            self.assertEqual(src,expected)
             q=bytes.fromhex(q_h)
             qref=bytes.fromhex(qref_h)
             self.assertEqual(int(q==qref),int(ref))
@@ -81,7 +100,7 @@ class PinnedGgmlFixture(unittest.TestCase):
             self.assertGreater(folded_err,0)
             self.assertGreater(ref_err,0)
             self.assertTrue(math.isfinite(preserved) and math.isfinite(folded_err) and math.isfinite(ref_err))
-            print(f"Q4TC synthetic pinned ggml {role}: tail_RMSE={preserved:.6g} "
+            print(f"Q4TC encoded-QAD synthetic pinned ggml {role}: tail_RMSE={preserved:.6g} "
                   f"folded_RMSE={folded_err:.6g} ref_RMSE={ref_err:.6g} "
                   f"ref_match={ref}/{ref_folded}")
 if __name__=="__main__":unittest.main()

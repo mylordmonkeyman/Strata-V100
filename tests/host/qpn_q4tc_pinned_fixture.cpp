@@ -1,4 +1,5 @@
-// Synthetic QAD-shaped Q4TC quantization fixture against pinned ggml; CPU only.
+// Synthetic encoded QAD -> pinned ggml NVFP4 dequant -> Q4TC quantization fixture.
+// Host-only; synthetic IPC is captured by Python and never printed in CI logs.
 #include "ggml.h"
 #include "ggml-quants.h"
 #include <cmath>
@@ -9,16 +10,19 @@
 #include <string>
 #include <vector>
 namespace {
-constexpr float e2m1[16]={0.f,.5f,1.f,1.5f,2.f,3.f,4.f,6.f,-0.f,-.5f,-1.f,-1.5f,-2.f,-3.f,-4.f,-6.f};
-std::vector<float> synthetic(int k,int seed){
-    std::vector<float> x((size_t)k);
-    for(int i=0;i<k;++i){
-        const int code=(i*7+(i/16)*3+seed*5)&15;
-        const int s=0x28+((i/16+seed*2)%9)*3;
-        const float scale=std::ldexp(1.f+(s&7)/8.f,((s>>3)&15)-7);
-        x[(size_t)i]=e2m1[code]*scale;
+std::vector<block_nvfp4> qad_bytes(int k, int seed) {
+    if (k <= 0 || k % 64) throw std::runtime_error("invalid synthetic QAD shape");
+    std::vector<block_nvfp4> q((size_t)k / 64);
+    for (int i = 0; i < k; i += 16) {
+        const int block = i / 64, sub = (i % 64) / 16;
+        q[(size_t)block].d[sub] = (uint8_t)(0x28 + ((i / 16 + seed * 2) % 9) * 3);
+        for (int j = 0; j < 8; ++j) {
+            const int lo = ((i + j) * 7 + ((i + j) / 16) * 3 + seed * 5) & 15;
+            const int hi = ((i + 8 + j) * 7 + ((i + 8 + j) / 16) * 3 + seed * 5) & 15;
+            q[(size_t)block].qs[sub * 8 + j] = (uint8_t)(lo | (hi << 4));
+        }
     }
-    return x;
+    return q;
 }
 std::string hex(const void* data,size_t n){
     constexpr char h[]="0123456789abcdef";
@@ -29,8 +33,15 @@ std::string hex(const void* data,size_t n){
 }
 template<class B> void emit(const char* role,int k,int seed,float tail,ggml_type type,int block_k,
     void(*ref)(const float*,B*,int64_t),void(*deq)(const B*,float*,int64_t)){
+    const auto qad = qad_bytes(k,seed);
+    if (sizeof(block_nvfp4) != 36 || ggml_blck_size(GGML_TYPE_NVFP4) != 64 ||
+        ggml_row_size(GGML_TYPE_NVFP4,k) != qad.size() * sizeof(block_nvfp4))
+        throw std::runtime_error("pinned ggml QAD block ABI mismatch");
+    std::vector<float> original((size_t)k);
+    dequantize_row_nvfp4(qad.data(),original.data(),k);
+    for(float v:original)if(!std::isfinite(v))throw std::runtime_error("nonfinite QAD source");
     for(int fold=0;fold<2;++fold){
-        std::vector<float> src=synthetic(k,seed);
+        std::vector<float> src=original;
         if(fold)for(float& v:src)v*=tail;
         const size_t n=(size_t)k/block_k;
         std::vector<B> q(n),qr(n);
@@ -47,12 +58,15 @@ template<class B> void emit(const char* role,int k,int seed,float tail,ggml_type
         std::cout<<role<<' '<<(fold?"folded":"tail")<<' '<<k<<' '<<(same?1:0)<<' '
                  <<hex(src.data(),src.size()*sizeof(float))<<' '
                  <<hex(q.data(),bytes)<<' '<<hex(qr.data(),bytes)<<' '
-                 <<hex(out.data(),out.size()*sizeof(float))<<'\n';
+                 <<hex(out.data(),out.size()*sizeof(float))<<' '
+                 <<hex(qad.data(),qad.size()*sizeof(block_nvfp4))<<' '
+                 <<hex(original.data(),original.size()*sizeof(float))<<'\n';
     }
 }
 }
 int main(){
     try{
+        static_assert(sizeof(block_nvfp4)==36);
         static_assert(sizeof(block_q4_K)==144);
         static_assert(sizeof(block_iq4_nl)==18);
         emit("gate",2560,0,1.25f,GGML_TYPE_Q4_K,256,quantize_row_q4_K_ref,dequantize_row_q4_K);
