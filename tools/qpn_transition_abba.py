@@ -20,6 +20,12 @@ PROMPT_SHA = 'df1ffef8677cccf2b8b8af36df04387edb747a186600e9801909b6f99fb6f414'
 ORDER = ('both-off', 'transition-fallback', 'transition-fallback', 'both-off')
 SELECTIVE_ORDER = ('transition-fallback', 'selective-supply', 'selective-supply', 'transition-fallback')
 EARLY_STAGE_ORDER = ('selective-supply', 'early-stage', 'early-stage', 'selective-supply')
+# Two labeled cache/page warmups, followed by three balanced four-run blocks.
+# Every measured arm appears six times; this remains fresh-process, NOT warm-engine.
+REPEAT_WARMUP_ORDER = ('selective-supply', 'early-stage')
+REPEAT_MEASURED_ORDER = (EARLY_STAGE_ORDER +
+                         ('early-stage', 'selective-supply', 'selective-supply', 'early-stage') +
+                         EARLY_STAGE_ORDER)
 
 
 def mode_flags(mode):
@@ -194,6 +200,79 @@ def evaluate_early_stage(summary, outputs):
                          'early_stage_initial_screen_no_material_benefit')
     return True
 
+
+def evaluate_early_stage_repeat(summary, outputs):
+    """Bounded matched-H2D repeat screen; no warm-engine/accepted-token qualification."""
+    order = REPEAT_MEASURED_ORDER
+    runs = summary['runs']
+    if len(runs) != len(order) or len(outputs) != len(order) or len(summary['warmups']) != 2:
+        summary['status'] = 'failed_incomplete_repeat'
+        return False
+    if any(r['mode'] != order[i] for i, r in enumerate(runs)):
+        summary['status'] = 'failed_repeat_order'
+        return False
+    # Compare private logits in memory. Publish only an equality boolean and shape.
+    first = outputs[0].tobytes()
+    summary['first_logits_bitwise_all'] = all(v.tobytes() == first for v in outputs[1:])
+    summary['n_first_logits'] = len(outputs[0])
+    if not summary['first_logits_bitwise_all']:
+        summary['status'] = 'failed_mmq_repeat_bitwise_parity'
+        return False
+    for metric in ('entries', 'copies', 'skipped', 'bytes', 'skipped_bytes',
+                   'jobs', 'skipped_jobs'):
+        if len({r['selective_supply'][metric] for r in runs}) != 1:
+            summary['status'] = 'failed_repeat_mismatched_H2D_or_host_work'
+            return False
+    omitted = [r['early_stage']['cpu_jobs_omitted'] for r in runs
+               if r['mode'] == 'early-stage']
+    if not omitted or min(omitted) <= 0:
+        summary['status'] = 'stopped_repeat_no_cpu_omission'
+        return False
+    summary['cpu_jobs_omitted_range'] = [min(omitted), max(omitted)]
+    bytes_omitted = [r['early_stage']['cpu_bytes_omitted'] for r in runs
+                     if r['mode'] == 'early-stage']
+    summary['cpu_bytes_omitted_range'] = [min(bytes_omitted), max(bytes_omitted)]
+    if any(r.get('decode_tokens', 0) < 64 for r in runs):
+        summary['status'] = 'failed_repeat_insufficient_decode_tokens'
+        return False
+    for metric in ('prefill_ms', 'ttft_ms', 'wall_s', 'decode_toks_per_s'):
+        med = {}
+        p95 = {}
+        for mode in ('selective-supply', 'early-stage'):
+            vals = sorted(r[metric] for r in runs if r['mode'] == mode)
+            if len(vals) != 6 or any(v is None or not math.isfinite(v) or v <= 0 for v in vals):
+                summary['status'] = 'failed_repeat_timing'
+                return False
+            med[mode] = statistics.median(vals)
+            p95[mode] = vals[math.ceil(.95 * len(vals)) - 1]  # conservative n=6 nearest rank
+        summary['median_' + metric] = med
+        summary['p95_' + metric] = p95
+    blocks = []
+    for start in (0, 4, 8):
+        block = runs[start:start + 4]
+        vals = {}
+        for metric in ('prefill_ms', 'ttft_ms', 'wall_s'):
+            a = statistics.median(r[metric] for r in block if r['mode'] == 'selective-supply')
+            b = statistics.median(r[metric] for r in block if r['mode'] == 'early-stage')
+            vals[metric + '_latency_reduction_pct'] = 100.0 * (1.0 - b / a)
+        blocks.append(vals)
+    summary['four_run_blocks'] = blocks
+    a_wall = summary['median_wall_s']['selective-supply']
+    b_wall = summary['median_wall_s']['early-stage']
+    a_decode = summary['median_decode_toks_per_s']['selective-supply']
+    b_decode = summary['median_decode_toks_per_s']['early-stage']
+    summary['median_full_process_latency_reduction_pct'] = 100.0 * (1.0 - b_wall / a_wall)
+    summary['median_decode_rate_change_pct'] = 100.0 * (b_decode / a_decode - 1.0)
+    summary['all_blocks_full_process_5pct'] = all(
+        b['wall_s_latency_reduction_pct'] >= 5.0 for b in blocks)
+    summary['decode_regression_over_5pct'] = b_decode < 0.95 * a_decode
+    summary['full_request_performance_qualified'] = False
+    summary['status'] = ('repeat_screen_positive_unqualified'
+                         if summary['all_blocks_full_process_5pct']
+                         and not summary['decode_regression_over_5pct']
+                         else 'repeat_screen_no_material_gain_or_decode_regression')
+    return True
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'binary', 'prepared', 'state', 'report'):
@@ -206,13 +285,17 @@ def main():
                    help='ABBA of MMQ selective H2D vs skipped CPU staging')
     p.add_argument('--early-stage-matched-abba', action='store_true',
                    help='same ABBA with published-route H2D (diagnostic only)')
+    p.add_argument('--early-stage-matched-repeat', action='store_true',
+                   help='two cache warmups plus 3 balanced ABBA blocks, matched H2D, 128 decode tokens')
     a = p.parse_args()
-    early_abba = a.early_stage_abba or a.early_stage_matched_abba
+    repeat_mode = a.early_stage_matched_repeat
+    early_abba = a.early_stage_abba or a.early_stage_matched_abba or repeat_mode
     if sum(map(bool, (a.supply_profile, a.selective_abba, a.early_stage_abba,
-                      a.early_stage_matched_abba))) > 1:
+                      a.early_stage_matched_abba, repeat_mode))) > 1:
         p.error('supply modes are mutually exclusive')
-    order = EARLY_STAGE_ORDER if early_abba else SELECTIVE_ORDER if a.selective_abba else ORDER
-    plan = supply_plan() if a.supply_profile else [(m, False) for m in order]
+    order = REPEAT_MEASURED_ORDER if repeat_mode else EARLY_STAGE_ORDER if early_abba else SELECTIVE_ORDER if a.selective_abba else ORDER
+    plan = supply_plan() if a.supply_profile else [
+        (m, False) for m in ((REPEAT_WARMUP_ORDER + order) if repeat_mode else order)]
     a.report.mkdir(parents=True, exist_ok=True)
     a.state.mkdir(parents=True, exist_ok=True)
     prompt = a.state / 'prompt-2048.txt'
@@ -229,7 +312,7 @@ def main():
                STRATA_QPN_SUPPLY_TRACE='0')
     cmd = [str(a.binary), '--pack', str(a.prepared / 'pack'), '--native', str(a.prepared / 'dense.gguf'),
            '--native-dense-gguf', str(a.prepared / 'dense.gguf'), '--ple-gguf', str(a.prepared / 'ple-nvfp4.gguf'),
-           '--tokens-file', str(prompt), '--max-context', '4096', '--max-new', '16', '--greedy',
+           '--tokens-file', str(prompt), '--max-context', '4096', '--max-new', '128' if repeat_mode else '16', '--greedy',
            '--expert-cache', 'auto', '--expert-profile', str(a.source / 'data/expert-profile.bin'),
            '--resident-budget-gib', '24', '--pool-workers', '16', '--prefill', '1024', '--spec', '2',
            '--suffix-draft', '0', '--adapt-every', '0', '--vram-reserve-mib', '1536', '--stats']
@@ -264,12 +347,21 @@ def main():
             'single 2047-token prompt, no longer-context or accepted-token quality gate',
             'CPU staging omission does not prove exposed critical-path time saved',
             'no CUDA Graph, Compute Sanitizer or broad model-quality qualification']
-        if a.early_stage_matched_abba:
+        if a.early_stage_matched_abba or repeat_mode:
             summary['scope'] = ('MMQ-only diagnostic: both arms wait for current-layer '
                                 'route publication before H2D, canonical weights')
             summary['limitations'] += [
                 'forced publication wait removes speculative H2D lookahead in both arms',
                 'matched-H2D diagnostic cannot establish speedup of original asynchronous policy']
+    if repeat_mode:
+        summary.update(scope='MMQ-only 2 cache warmups + 3 balanced matched-H2D blocks; fresh processes',
+                       order=list(order), warmup_order=list(REPEAT_WARMUP_ORDER), warmups=[],
+                       full_request_performance_qualified=False)
+        summary['limitations'] += [
+            'six timed fresh processes per arm after two process warmups; not warm-engine sessions',
+            'single 2047-token prompt; no independent held-out or longer-context dataset',
+            '128 requested generated tokens, but no accepted-draft/target-pass counters',
+            'three blocks, no independent confidence interval; cannot qualify production']
     report = a.report / 'summary.json'
     def save():
         report.write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
@@ -284,7 +376,7 @@ def main():
                          supply_mode_flags(mode) if a.supply_profile else mode_flags(mode))
             trial['STRATA_PREFILL_STREAM_MIN'] = '4096' if mode == 'forced-staged' else '1024'
             trial['STRATA_QPN_SUPPLY_TRACE'] = str(int(trace))
-            if a.early_stage_matched_abba:
+            if a.early_stage_matched_abba or repeat_mode:
                 trial['STRATA_QPN_MMQ_MATCHED_H2D'] = '1'
             log = private / f'{i}.log'
             dump = private / f'{i}.f32'
@@ -301,7 +393,8 @@ def main():
                        control_flags={k: v for k, v in trial.items() if k.startswith('STRATA_') and k != 'STRATA_DUMP_FIRST_LOGITS'},
                        returncode=code, wall_s=time.monotonic()-start)
             row.update(read_summary(log))
-            summary['runs'].append(row)
+            (summary['warmups'] if repeat_mode and i < len(REPEAT_WARMUP_ORDER)
+             else summary['runs']).append(row)
             save()
             if code:
                 row['startup_diagnostics'] = safe_failure_diagnostics(log)
@@ -320,6 +413,9 @@ def main():
                 save()
                 return 2
             raw = log.read_text(errors='replace')
+            if repeat_mode:
+                dm = re.findall(r'decode\s+(\d+)\s+tokens in', raw)
+                row['decode_tokens'] = int(dm[-1]) if dm else 0
             if re.search(r'non[- ]finite|illegal memory access|CUDA error|device-side assert', raw, re.I):
                 summary['status'] = 'failed_safety'
                 save()
@@ -379,9 +475,10 @@ def main():
                     summary['status'] = 'stopped_zero_cpu_jobs_omitted'
                     save()
                     return 0
-            outputs.append(v)
+            if not (repeat_mode and i < len(REPEAT_WARMUP_ORDER)):
+                outputs.append(v)
             save()
-            print(f'MMQ ABBA {i+1}/4 {mode} completed', flush=True)
+            print(f'MMQ matched repeat {i+1}/{len(plan)} {mode} completed', flush=True)
         if a.selective_abba or early_abba:
             counters = [r['selective_supply'] for r in summary['runs']]
             total_bytes = {r['bytes'] + r['skipped_bytes'] for r in counters}
@@ -390,6 +487,7 @@ def main():
                 save()
                 return 2
         ok = (evaluate_supply(summary, outputs) if a.supply_profile else
+              evaluate_early_stage_repeat(summary, outputs) if repeat_mode else
               evaluate_early_stage(summary, outputs) if early_abba else
               evaluate(summary, outputs, order))
         save()
