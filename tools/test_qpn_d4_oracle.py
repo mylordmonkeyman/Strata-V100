@@ -5,8 +5,10 @@ import unittest
 from qpn_d4_oracle import D4_BLOCK_BYTES, decode_d4_to_f16
 
 
-def sample(rows, columns, pitch):
-    data = bytearray(columns // 128 * pitch * D4_BLOCK_BYTES)
+def sample(rows, columns, pitch, *, physical_columns=None):
+    if physical_columns is None:
+        physical_columns = columns
+    data = bytearray(b'\x5a' * (physical_columns // 128 * pitch * D4_BLOCK_BYTES))
     expected = []
     for block in range(columns // 128):
         for row in range(pitch):
@@ -35,6 +37,23 @@ class D4StageOracle(unittest.TestCase):
                 actual = [v[0] for v in struct.iter_unpack('<e', result)]
                 self.assertEqual(actual, expected)
                 self.assertEqual(len(result), 2 * rows * cols)
+
+    def test_padded_mmq_producer_width_not_logical_width(self):
+        # H: 640 logical columns, 1024 D4 physical columns in Strata MMQ.
+        payload, expected = sample(2, 640, 4, physical_columns=1024)
+        result = decode_d4_to_f16(payload, 2, 640, ne1=4,
+                                  physical_columns=1024)
+        self.assertEqual([v[0] for v in struct.iter_unpack('<e', result)], expected)
+        # The extra 384 physical columns are not part of output. Poison
+        # one padded block to ensure its nonfinite scales are never read.
+        damaged = bytearray(payload)
+        struct.pack_into('<f', damaged, (5 * 4) * D4_BLOCK_BYTES, float('nan'))
+        self.assertEqual(decode_d4_to_f16(damaged, 2, 640, ne1=4,
+                                          physical_columns=1024), result)
+        with self.assertRaises(ValueError):
+            decode_d4_to_f16(payload, 2, 640, ne1=4)
+        with self.assertRaises(ValueError):
+            decode_d4_to_f16(payload, 2, 640, ne1=4, physical_columns=640)
 
     def test_does_not_read_padded_rows(self):
         payload, expected = sample(2, 256, 4)

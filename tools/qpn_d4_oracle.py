@@ -17,14 +17,18 @@ D4_BLOCK_VALUES = 128
 
 
 def decode_d4_to_f16(payload: bytes, rows: int, columns: int,
-                     *, ne1: int | None = None) -> bytes:
+                     *, ne1: int | None = None,
+                     physical_columns: int | None = None) -> bytes:
     """Reconstruct row-major binary16 [rows,columns] from column-block-major D4.
 
     D4 storage: block index = (column//128)*ne1 + row; each block has
     four FP32 scales followed by 128 signed int8 codes. ne1 is the
     producer's physical row pitch, NOT necessarily the number of rows
-    selected for this stage. Caller must independently verify correct
-    producer layout (D4, not DS4/D2S6).
+    selected for this stage. physical_columns is the producer's actual
+    padded width; for Strata MMQ quantize/scatter supply pad512(columns).
+    The default, physical_columns=columns, is for isolated synthetic D4
+    fixture parsing only. Caller must independently verify D4 provenance
+    (not W4A4, DS4 or D2S6).
 
     Invalid/non-FP16-representable values are rejected rather than silently
     creating inf. A future device model consumer requires its own guards.
@@ -36,8 +40,13 @@ def decode_d4_to_f16(payload: bytes, rows: int, columns: int,
         ne1 = rows
     if type(ne1) is not int or ne1 < rows:
         raise ValueError('D4 physical row pitch must contain output rows')
+    if physical_columns is None:
+        physical_columns = columns
+    if (type(physical_columns) is not int or physical_columns < columns or
+            physical_columns % D4_BLOCK_VALUES):
+        raise ValueError('D4 physical width must be 128-aligned and cover logical columns')
     if not isinstance(payload, (bytes, bytearray, memoryview)) or len(payload) != (
-            columns // D4_BLOCK_VALUES) * ne1 * D4_BLOCK_BYTES:
+            physical_columns // D4_BLOCK_VALUES) * ne1 * D4_BLOCK_BYTES:
         raise ValueError('D4 payload length does not match producer pitch')
     out = bytearray(rows * columns * 2)
     for colblock in range(columns // D4_BLOCK_VALUES):

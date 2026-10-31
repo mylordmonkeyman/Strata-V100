@@ -34,6 +34,14 @@ if(STRATA_ENABLE_VOLTA_QPN)
       message(FATAL_ERROR "Experimental QPN R1 verification capture requires strata_engine")
     endif()
   endif()
+  # Manually selected synthetic D4 correctness target. Not registered with CTest:
+  # the existing GPU lock and job-idle checks are mandatory before execution.
+  if(STRATA_BUILD_TESTS)
+    add_executable(nvfp4_qpn_d4_stage_parity tests/cuda/qpn_d4_stage_parity.cu)
+    set_target_properties(nvfp4_qpn_d4_stage_parity PROPERTIES
+      CUDA_ARCHITECTURES "70-real" CUDA_STANDARD 17)
+    target_link_libraries(nvfp4_qpn_d4_stage_parity PRIVATE strata_volta_qpn CUDA::cudart)
+  endif()
   if(STRATA_NATIVE_EXPERTS)
     add_executable(nvfp4_volta_qpn_bench src/kernels/nvfp4_volta_qpn_bench.cpp)
     target_link_libraries(nvfp4_volta_qpn_bench PRIVATE strata_volta_qpn strata_kernels ggml-base CUDA::cudart)

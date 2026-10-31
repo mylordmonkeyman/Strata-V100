@@ -24,7 +24,8 @@ def producer_d4(rows, physical_pitch=None):
     """Reference physical row transposition of ggml's 128-code MMQ D4 blocks.
 
     The input `rows` is already in compact physical output-row order; caller
-    constructs the scattered source-to-row map independently.
+    constructs the scattered source-to-row map independently. Physical
+    quantizer width follows Strata's pad512(cols), including 640 -> 1024.
     """
     if not rows or len(rows[0]) % 128:
         raise ValueError('requires nonempty 128-aligned rows')
@@ -33,7 +34,8 @@ def producer_d4(rows, physical_pitch=None):
     if pitch < len(rows) or any(len(row) != columns for row in rows):
         raise ValueError('bad row pitch / row lengths')
     # Intentional opaque sentinels for unused physical rows.
-    data = bytearray(b'\x5a' * ((columns // 128) * pitch * 144))
+    physical_columns = ((columns + 511) // 512) * 512
+    data = bytearray(b'\x5a' * ((physical_columns // 128) * pitch * 144))
     for colblock in range(columns // 128):
         for rowidx, row in enumerate(rows):
             base = (colblock * pitch + rowidx) * 144
@@ -67,7 +69,8 @@ class PinnedD4ProducerReference(unittest.TestCase):
                 source = synthetic_rows(3, columns)
                 packed, pitch = producer_d4(source, physical_pitch=5)
                 actual = [v[0] for v in struct.iter_unpack(
-                    '<e', decode_d4_to_f16(packed, 3, columns, ne1=pitch))]
+                    '<e', decode_d4_to_f16(packed, 3, columns, ne1=pitch,
+                                           physical_columns=((columns + 511) // 512) * 512))]
                 self.assertEqual(len(actual), 3 * columns)
                 for rowidx, row in enumerate(source):
                     for quarter_start in range(0, columns, 32):
@@ -88,7 +91,8 @@ class PinnedD4ProducerReference(unittest.TestCase):
             for index in indices:
                 compact[index] = src[token]
         payload, pitch = producer_d4(compact)
-        result = decode_d4_to_f16(payload, len(compact), 640, ne1=pitch)
+        result = decode_d4_to_f16(payload, len(compact), 640, ne1=pitch,
+                                   physical_columns=1024)
         unpacked = [v[0] for v in struct.iter_unpack('<e', result)]
         self.assertEqual(unpacked[0:640], unpacked[3*640:4*640])
         self.assertEqual(unpacked[1*640:2*640], unpacked[4*640:5*640])

@@ -235,10 +235,15 @@ void stage_mmq_d4_q8_1_to_fp16(const void* input, std::size_t input_bytes,
         (reinterpret_cast<std::uintptr_t>(invalid_count) & 3u) ||
         std::size_t(rows) > std::size_t(std::numeric_limits<int>::max()) / std::size_t(columns))
         throw std::invalid_argument("invalid experimental MMQ D4 stage shape/pointers");
-    const std::size_t blocks = std::size_t(columns) / 128;
+    // Strata's mmq::quantize and quantize_scatter both use pad512(columns)
+    // as ne0; 640 logical FP32 values occupy 1024 physical Q8 columns.
+    // q8_bytes also reserves 128 trailing MMQ blocks. Require enough
+    // physical D4 storage, never interpret the trailing guard as data.
+    const std::size_t physical_columns = (std::size_t(columns) + 511) / 512 * 512;
+    const std::size_t blocks = physical_columns / 128;
     if (std::size_t(ne1) > std::numeric_limits<std::size_t>::max() / (blocks * 144) ||
-        input_bytes != blocks * std::size_t(ne1) * 144)
-        throw std::invalid_argument("MMQ D4 byte count/pitch mismatch");
+        input_bytes < blocks * std::size_t(ne1) * 144)
+        throw std::invalid_argument("MMQ D4 padded byte count/pitch mismatch");
     const std::size_t count = std::size_t(rows) * std::size_t(columns);
     stage_mmq_d4_kernel<<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(
         static_cast<const MmqD4Block*>(input), reinterpret_cast<half*>(output),

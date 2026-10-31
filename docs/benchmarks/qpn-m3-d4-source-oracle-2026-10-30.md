@@ -48,6 +48,58 @@ and exact float-operation/compiler behavior require direct device
 verification; a matching host simulation alone cannot qualify M3.
 Neither canonical nor QPN weight residency was changed.
 
+## Verified producer padding correction (new M3 finding)
+
+Source audit of `src/prefill/moe_mmq.cu` shows that both
+`mmq::quantize` and `mmq::quantize_scatter` call ggml's MMQ Q8
+producer with **`pad512(cols)` as its physical quantized width**.
+`mmq::q8_bytes` allocates that physical region **plus 128 extra 144-byte
+blocks of MMQ overread guard**. A logical 640-value hidden row therefore
+uses **1024 physical columns**, not 640; 2560 stays 2560.
+
+The original experimental CUDA D4 stage checked
+`input_bytes == (logical_columns/128)*ne1*144`. That check cannot admit
+the actual padded 640-column producer buffer and would also reject an
+allocation that includes the existing MMQ guard. Corrected:
+the required readable physical D4 extent is
+`(pad512(logical_columns)/128)*ne1*144`, and `input_bytes` must cover
+at least that extent. The kernel still emits **logical** `[rows,columns]`
+FP16 values and never accesses padded columns or the trailing guard.
+This remains conditional on verified W4A8 D4 provenance; W4A4/DS4/D2S6
+sources must never be passed to this function.
+
+The independent Python oracle accepts an explicit `physical_columns`
+for padded real-producer fixtures; its default logical-width mode is
+only for prior synthetic-format tests. The producer-algorithm test now
+allocates `pad512(cols)` physical bytes and leaves unused columns
+poisoned. A new 640→1024 test ensures it can read logical values and
+never reads poisoned padding. **Nine host-only D4 tests passed.**
+
+A separate **manual-only** CUDA target, `nvfp4_qpn_d4_stage_parity`,
+was added to `cmake/volta_qpn.cmake`. It is behind
+`STRATA_ENABLE_VOLTA_QPN=ON` and `STRATA_BUILD_TESTS=ON`, off in normal
+builds, and deliberately **not registered with CTest** (no automatic
+GPU run). It uses synthetic D4 activation buffers only: padded physical
+widths, guard bytes, exact FP16 output checks, malformed-shape rejection,
+device invalid-counter checks, and changed-input CUDA Graph replay.
+No expert weights or quantization replacements are ever resident.
+
+Build the new target using an already configured isolated CUDA-12.8
+sm_70 build directory (no Docker rebuild):
+
+```bash
+cmake --build "$EXISTING_QPN_CUDA_BUILD" --target nvfp4_qpn_d4_stage_parity
+```
+
+This is **compile-only**. Any device execution must first independently
+verify that the existing GPU is idle, obtain the **existing**
+`/srv/strata-qpn/gpu.lock`, preserve concurrency
+`strata-qpn-v100` / `cancel-in-progress:false`, and use the installed
+CUDA 12.8 environment. Neither CUDA compilation nor device execution
+has been performed by this change. Device testing against **actual**
+ggml-generated D4 bytes is still necessary after synthetic-device
+parity; a simulated host quantizer is not that proof.
+
 ## Not yet qualified / independent gates
 
 Host oracle coverage is **not** real ggml quantize/scatter device-output parity, compiled-CUDA or device numerical verification. The experimental CUDA stage still requires a pinned CUDA-12.8 compile, actual producer D4 X/H reads with independently verified `ne1`, oracle parity, tail/invalid-count checks, changed-input Graph, guards and sanitizer checks. Full model requires earlier divergence attribution, FP32-versus-D4 controls, 100+ held-out quality prompts and accepted decode verification. Do not dispatch this kernel in a model or claim quality/performance until these tests pass.

@@ -75,7 +75,12 @@ void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, voi
 // scales followed by 128 signed codes, at 144 bytes per 128-column block.
 // Input is column-block-major with physical row pitch ne1; output is row-major
 // FP16 [rows,columns]. Must use producer's proven D4 layout, NOT DS4/D2S6.
-// input_bytes must equal (columns/128)*ne1*144, ne1 >= rows.
+// The pinned Strata MMQ producer stores pad512(columns) physical columns.
+// input_bytes is the available D4 allocation extent, at least
+// (pad512(columns)/128)*ne1*144 bytes; extra q8_bytes trailing MMQ
+// overread guard is permitted but never accessed. ne1 >= rows.
+// Caller must verify provenance: producer uses NVFP4 W4A8 MMQ D4,
+// not W4A4 FP4 activations or DS4/D2S6.
 // The caller supplies a device uint32 counter initialized to ZERO and MUST
 // synchronize/read it before consuming output. A nonzero invalid_count means
 // a nonfinite/out-of-FP16-range value; entire output is INVALID (no fallback).
