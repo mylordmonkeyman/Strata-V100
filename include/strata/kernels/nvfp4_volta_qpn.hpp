@@ -71,6 +71,18 @@ void projection_chunkmajor_batch(const std::uint8_t* w, std::size_t weight_strid
 // Explicit input conversion; q8_1 is [half d, half sum, int8 qs[32]], 36 bytes.
 void stage_f32(const float* input, std::uint16_t* output, std::size_t count, void* stream);
 void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, void* stream);
+// Standalone diagnostic only: MMQ D4 block_q8_1_mmq has four float32
+// scales followed by 128 signed codes, at 144 bytes per 128-column block.
+// Input is column-block-major with physical row pitch ne1; output is row-major
+// FP16 [rows,columns]. Must use producer's proven D4 layout, NOT DS4/D2S6.
+// input_bytes must equal (columns/128)*ne1*144, ne1 >= rows.
+// The caller supplies a device uint32 counter initialized to ZERO and MUST
+// synchronize/read it before consuming output. A nonzero invalid_count means
+// a nonfinite/out-of-FP16-range value; entire output is INVALID (no fallback).
+// No graph, model, cache, weight-format or full-model quality qualification.
+void stage_mmq_d4_q8_1_to_fp16(const void* input, std::size_t input_bytes,
+                               std::uint16_t* output, int rows, int columns,
+                               int ne1, unsigned int* invalid_count, void* stream);
 // Global scales stay FP32, applied before FP32 SiLU and on the down output.
 void swiglu(const float* gate, const float* up, const float* tail,
             float* hidden, std::size_t count, void* stream);

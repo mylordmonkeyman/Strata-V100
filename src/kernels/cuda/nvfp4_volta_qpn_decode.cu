@@ -30,6 +30,35 @@ __global__ void stage_kernel(const void* input, half* output, std::size_t count)
     } else value = static_cast<const float*>(input)[i];
     output[i] = __float2half_rn(value);
 }
+// Independent diagnostic for ggml's block_q8_1_mmq D4 layout (144 bytes).
+// NOT the legacy linear 36-byte Q8_1 block used by stage_q8_1.
+struct alignas(4) MmqD4Block {
+    float d4[4];
+    std::int8_t qs[128];
+};
+static_assert(sizeof(MmqD4Block) == 144, "MMQ D4 ABI changed");
+
+__global__ void stage_mmq_d4_kernel(const MmqD4Block* input, half* output,
+                                     std::size_t count, int cols, int ne1,
+                                     unsigned int* invalid_count) {
+    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const std::size_t row = i / std::size_t(cols);
+    const int col = int(i % std::size_t(cols));
+    // ggml quantize_mmq_q8_1: ib = (column / 128) * ne1 + row,
+    // both for scattered compact X and non-scattered hidden H.
+    const MmqD4Block& b = input[std::size_t(col / 128) * ne1 + row];
+    const int within = col % 128;
+    const float reconstructed = b.d4[within / 32] * float(b.qs[within]);
+    if (!isfinite(reconstructed) || fabsf(reconstructed) > 65504.0f) {
+        // Fail-closed diagnostic: caller MUST check the pre-zeroed device
+        // invalid_count after synchronization; this output is unusable if nonzero.
+        atomicAdd(invalid_count, 1u);
+        output[i] = __float2half_rn(0.0f);
+        return;
+    }
+    output[i] = __float2half_rn(reconstructed);
+}
 __global__ void swiglu_kernel(const float* gate, const float* up, const float* tail,
                              float* hidden, std::size_t count) {
     const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -195,6 +224,26 @@ void stage_q8_1(const void* input, std::uint16_t* output, std::size_t count, voi
     if (count % 32) throw std::invalid_argument("QPN Q8_1 staging requires whole blocks");
     stage_kernel<true><<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(
         input, reinterpret_cast<half*>(output), count); check();
+}
+void stage_mmq_d4_q8_1_to_fp16(const void* input, std::size_t input_bytes,
+                                  std::uint16_t* output, int rows, int columns,
+                                  int ne1, unsigned int* invalid_count, void* stream) {
+    if (!input || !output || !invalid_count || rows < 1 || columns < 128 ||
+        columns % 128 != 0 || ne1 < rows ||
+        (reinterpret_cast<std::uintptr_t>(input) & 3u) ||
+        (reinterpret_cast<std::uintptr_t>(output) & 1u) ||
+        (reinterpret_cast<std::uintptr_t>(invalid_count) & 3u) ||
+        std::size_t(rows) > std::size_t(std::numeric_limits<int>::max()) / std::size_t(columns))
+        throw std::invalid_argument("invalid experimental MMQ D4 stage shape/pointers");
+    const std::size_t blocks = std::size_t(columns) / 128;
+    if (std::size_t(ne1) > std::numeric_limits<std::size_t>::max() / (blocks * 144) ||
+        input_bytes != blocks * std::size_t(ne1) * 144)
+        throw std::invalid_argument("MMQ D4 byte count/pitch mismatch");
+    const std::size_t count = std::size_t(rows) * std::size_t(columns);
+    stage_mmq_d4_kernel<<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(
+        static_cast<const MmqD4Block*>(input), reinterpret_cast<half*>(output),
+        count, columns, ne1, invalid_count);
+    check();
 }
 void swiglu(const float* g, const float* u, const float* tail, float* h, std::size_t count, void* stream) {
     swiglu_kernel<<<grid(count), threads, 0, static_cast<cudaStream_t>(stream)>>>(g, u, tail, h, count); check();
