@@ -142,3 +142,49 @@ CUDA12.8/cache/security constraints. No such run was performed here.
 `M3 GPU parity` remains **UNVERIFIED** until successful device
 execution and sanitizer review. Even a pass is not full-model
 numerical-quality or performance qualification.
+
+
+## Manual, gated M3 CUDA build / device-qualification entry point
+
+`tools/qpn_m3_d4_manual.sh` is a **manually invoked script**, not a
+scheduled automation, GitHub Actions workflow, Docker image rebuild, or
+full-model QPN benchmarking workflow. It builds only the two existing
+standalone synthetic D4 parity targets using an **already configured**
+CUDA-12.8 `sm_70` CMake build. No new CMake configuration is created.
+The normal invocation compiles **only**:
+
+```bash
+bash tools/qpn_m3_d4_manual.sh --build-dir /path/to/existing/cuda12.8-build
+```
+
+The separate `--device` option first requires the existing shared
+`/srv/strata-qpn/gpu.lock`, verifies an idle V100 via `nvidia-smi`,
+checks exact source-branch and CMake cache identity, and holds the lock
+during compilation and both synthetic device parity tests:
+
+```bash
+bash tools/qpn_m3_d4_manual.sh --build-dir /path/to/existing/cuda12.8-build --device
+```
+
+This command is **documentation**, not authorization for an unattended
+GPU run; inspect all active runner/jobs before manually invoking it.
+The script does not kill existing clients, change driver or service state,
+clear caches, download model artifacts, change cache/slot layouts, or use
+dual expert representations. It restores all four mandatory MMQ control
+flags in the environment of the synthetic device tests and forces W4A8
+with the original quantizer scatter path. No model weights, GGUF, logits,
+private routes, or prompts are loaded.
+
+Host-only verification of this *script* was completed with `bash -n`,
+`--help`, an absent-build fail-closed preflight, and a disposable
+fake-CMake / fake-CUDA / fake-`nvidia-smi` fixture. Compile-only flow
+passed, a mock busy GPU was rejected, and mock idle-device control flow
+invoked only the two test-target names. **These mocks are not CUDA
+compilation or V100 device parity evidence.** All nine independent M3
+host-side D4 oracle/producer-reference tests passed separately.
+
+**Next qualification:** compile the two CUDA targets and perform actual
+synthetic device parity on the existing V100, observing preexisting
+runner-lock/concurrency rules. Do not proceed to any QPN cache R2 code,
+automatic Q4 pivot, or model-performance claim on this basis. M3 device
+qualification and timing-based R1 are still **UNKNOWN/unqualified**.
