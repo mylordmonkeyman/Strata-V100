@@ -99,7 +99,7 @@ A source-level edge case is now explicitly tested: pinned ggml's UE4M3 conversio
 
 **Decision:** Q4-0 remains **PARTIAL**. Encoded synthetic QAD source-to-Q4 parity is now host-validated, but **real QAD checkpoint expert fidelity, FP32 tail ABI and CPU fastpath scale consistency, full-model numerical quality, and R1 exposed-time performance opportunity remain unqualified**. Do not launch Q4TC GPU work or retain two representations of any expert in VRAM. All stopped QPN and early-staging subtracks remain stopped.
 
-## Expanded source-locked encoded-QAD stress fixture (host-only; validation pending)
+## Expanded source-locked encoded-QAD stress fixture (host-only; CI verified)
 
 The pinned-ggml Q4_K/IQ4_NL fixture now checks **four deterministic
 synthetic NVFP4 encoding patterns per projection** (24 source/quantizer
@@ -111,7 +111,29 @@ reference ggml quantizers are compared, with preserved and folded FP32
 tail scales, including a signed nonunit tail. Relative reconstruction
 errors are aggregated by projection and quantizer/scale mode.
 
-This is a **synthetic distribution stress test**, not a real QAD checkpoint
-sample or proof of full-model numerical fidelity. The experimental path
-remains default-off. No GPU benchmark, runtime ABI change, dual-format
-VRAM residency or stopped-subtrack rerun is authorized by this addition.
+**Validation:** [GitHub Actions 41203654257](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41203654257)
+completed successfully on source `1ccbea7f0fed9183d77554f7d41a9ac5adf02d5a`:
+196 general Python host tests, separately compiled and executed pinned-ggml
+Q4TC fixture, and CUDA **compile-only** job. The fixture checked 24
+synthetic source/mode records (four encoded patterns × three projections ×
+tail-preserved/folded), with independent NVFP4 and Q4 decoders and pinned
+production/reference quantizers. Aggregates from the host CI log:
+
+| Synthetic projection | Tail-preserved relative RMSE median | Folded relative RMSE median | Reference relative RMSE median | Worst tail relative RMSE |
+|---|---:|---:|---:|---:|
+| Gate Q4_K | 0.0877865 | 0.0877597 | 0.0877865 | 0.101500 |
+| Up Q4_K | 0.0824704 | 0.0824589 | 0.0824704 | 0.103943 |
+| Down IQ4_NL | 0.0843512 | 0.0843512 | 0.0868841 | 0.0940412 |
+
+These are normalized weight reconstruction errors **on synthetic encoded
+QAD-like rows**, not model quality or actual checkpoint accuracy. In this
+limited synthetic set the production IQ4_NL quantizer again outperformed
+the reference variant; no cross-distribution quality guarantee follows.
+The negative signed-tail case tests encoding/scale arithmetic but does not
+establish the actual model's tail distribution.
+
+**Decision:** Q4-0 remains PARTIAL, R1 exposed-time UNKNOWN. A real
+SHA-locked QAD checkpoint sample and independent end-to-end quality
+evidence are still required. The Q4-tail ABI/CPU fastpath bypass is
+unfixed; no Q4TC GPU prototype, runtime ABI change, dual-format VRAM
+residency or stopped-subtrack rerun is authorized by this addition.
