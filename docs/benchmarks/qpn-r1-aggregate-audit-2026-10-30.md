@@ -55,8 +55,9 @@ opportunity from a **whole-request, unchanged-native-MMQ packed-only
 plan without format changes**. For every published nonzero selected
 budget, the held-out routing screen reports both selected packed-expert
 prefill canonical-format demands and distinct native-verification
-consumers. Accordingly every scenario is labeled
-`CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS`. This is a conditional
+consumers. At **128 MiB**, there are zero optimistic complete QPN
+groups, so the result is `NO_PACKED_WORK`; at **256–2048 MiB**, every
+scenario is `CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS`. This is a conditional
 logical incompatibility with *unchanged* native readers and no format
 transition. It does NOT prove that an on-the-fly packed-layout decoder,
 a safe strictly sequential conversion, or a different one-copy format

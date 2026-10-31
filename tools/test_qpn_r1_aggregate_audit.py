@@ -36,9 +36,11 @@ class AggregateAuditTests(unittest.TestCase):
         self.assertLess(result['supply_observation']['median_prefill_reduction_fraction'], .008)
         for row in result['routing_scenarios']:
             self.assertGreater(row['native_verification_consumers'], 0)
+            expected = ('NO_PACKED_WORK' if row['optimistic_complete_groups'] == 0
+                        else 'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
             self.assertEqual(
                 row['no_transition_packed_only_reference_native_screen'],
-                'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
+                expected)
 
     def test_reject_false_eligibility_or_missing_routing(self):
         h = copy.deepcopy(self.heldout)
@@ -98,8 +100,10 @@ class AggregateAuditTests(unittest.TestCase):
             item['optimistic_prefill_restore_bytes']=0
         r=audit(h,self.supply)
         for row in r['routing_scenarios']:
+            expected = ('NO_PACKED_WORK' if row['optimistic_complete_groups'] == 0
+                        else 'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
             self.assertEqual(row['no_transition_packed_only_reference_native_screen'],
-                             'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
+                             expected)
         self.assertNotIn('measured_transition_s',json.dumps(r))
 
     def test_env_controls_immutable(self):
