@@ -35,7 +35,11 @@ inline void verify_quantized_source(const std::vector<std::uint8_t>& packed,
         for (int begin = 0; begin < columns; begin += 32) {
             const auto* input = source.data() + std::size_t(token) * columns + begin;
             float amax = 0.0f;
-            for (int j = 0; j < 32; ++j) amax = std::max(amax, std::abs(input[j]));
+            for (int j = 0; j < 32; ++j) {
+                if (!std::isfinite(input[j]))
+                    throw std::runtime_error("nonfinite original FP32 synthetic source");
+                amax = std::max(amax, std::abs(input[j]));
+            }
             if (!(amax > 0.0f) || !std::isfinite(amax))
                 throw std::runtime_error("synthetic input has invalid Q8 group");
             D4Block block{};

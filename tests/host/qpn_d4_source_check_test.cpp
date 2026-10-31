@@ -1,6 +1,7 @@
 // Host-only regression for the SAME validator used by the device parity test.
 #include "qpn_d4_source_check.hpp"
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <stdexcept>
 
@@ -72,6 +73,15 @@ int main() {
                 const std::size_t off = std::size_t(cols / 128) * rows * 144;
                 invalid[off] = 0xff;
                 qpn_m3::verify_quantized_source(invalid, source, tokens, rows, cols, scattered);
+            }
+            // Nonfinite original source must reject even if the group's
+            // other finite values would produce a plausible maximum.
+            for (float invalid_value : {std::numeric_limits<float>::quiet_NaN(),
+                                        std::numeric_limits<float>::infinity()}) {
+                auto broken_source = source;
+                broken_source[0] = invalid_value;
+                if (!rejects(q8, broken_source, tokens, rows, cols, scattered))
+                    throw std::runtime_error("nonfinite original FP32 accepted");
             }
             if (scattered) {
                 invalid = q8;
