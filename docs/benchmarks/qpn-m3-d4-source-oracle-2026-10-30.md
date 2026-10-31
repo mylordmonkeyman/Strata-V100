@@ -105,3 +105,40 @@ parity; a simulated host quantizer is not that proof.
 Host oracle coverage is **not** real ggml quantize/scatter device-output parity, compiled-CUDA or device numerical verification. The experimental CUDA stage still requires a pinned CUDA-12.8 compile, actual producer D4 X/H reads with independently verified `ne1`, oracle parity, tail/invalid-count checks, changed-input Graph, guards and sanitizer checks. Full model requires earlier divergence attribution, FP32-versus-D4 controls, 100+ held-out quality prompts and accepted decode verification. Do not dispatch this kernel in a model or claim quality/performance until these tests pass.
 
 Static packed admission remains **STOPPED** and timing-based R1 **UNKNOWN**. No QPN cache prototype or new Q4TC GPU kernel is authorized.
+
+## Real ggml producer-to-stage parity target (manual only; pending execution)
+
+A second, independent source-level qualification target
+`nvfp4_qpn_mmq_d4_producer_parity` exercises **the pinned actual Strata
+MMQ producer**, not only manually constructed D4 bytes:
+
+- It prepares deterministic synthetic FP32 activation rows (3×640 and
+  3×2560), calls `strata::prefill::mmq::quantize` for
+  `GGML_TYPE_NVFP4` in W4A8, and then calls the new D4→FP16 stage.
+- It downloads the resulting **synthetic device-produced D4 bytes** and
+  independently reconstructs their logical FP16 output on the host,
+  verifying bitwise agreement with the staging kernel, the invalid
+  counter, and the untouched FP16 output guard.
+- It separately calls `mmq::quantize_scatter` for 3×2 synthetic rows
+  at 640 logical columns, checking compact inverse-row mapping and
+  duplicate-source consistency. W4A4 mode and `STRATA_QUANT_GATHER=1`
+  are explicitly rejected by this targeted test.
+- It verifies `mmq::q8_bytes` has room for `pad512(cols)` plus the
+  existing 128-block overread guard. No expert weight representations
+  are loaded, converted or retained.
+
+The test is an optional CMake target when
+`STRATA_ENABLE_VOLTA_QPN=ON`, `STRATA_BUILD_TESTS=ON`, and
+`strata_mmq` / `ggml-base` are built. It is **not** part of automatic
+CTest and cannot run merely by building the target:
+
+```bash
+cmake --build "$EXISTING_QPN_CUDA_BUILD" --target nvfp4_qpn_mmq_d4_producer_parity
+```
+
+The actual device test may run only after independently checking existing
+runner activity, taking the existing `gpu.lock`, and retaining all
+CUDA12.8/cache/security constraints. No such run was performed here.
+`M3 GPU parity` remains **UNVERIFIED** until successful device
+execution and sanitizer review. Even a pass is not full-model
+numerical-quality or performance qualification.

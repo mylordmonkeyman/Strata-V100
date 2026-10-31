@@ -42,6 +42,15 @@ if(STRATA_ENABLE_VOLTA_QPN)
       CUDA_ARCHITECTURES "70-real" CUDA_STANDARD 17)
     target_link_libraries(nvfp4_qpn_d4_stage_parity PRIVATE strata_volta_qpn CUDA::cudart)
   endif()
+  # Independent ggml MMQ Q8 producer -> D4 staging parity, manual-only.
+  # Do not register with CTest: requires the existing exclusive GPU lock.
+  if(STRATA_BUILD_TESTS AND TARGET strata_mmq AND TARGET ggml-base)
+    add_executable(nvfp4_qpn_mmq_d4_producer_parity tests/cuda/qpn_mmq_d4_producer_parity.cu)
+    set_target_properties(nvfp4_qpn_mmq_d4_producer_parity PROPERTIES
+      CUDA_ARCHITECTURES "70-real" CUDA_STANDARD 17)
+    target_link_libraries(nvfp4_qpn_mmq_d4_producer_parity PRIVATE
+      strata_volta_qpn strata_mmq strata_kernels ggml-base CUDA::cudart CUDA::cublas)
+  endif()
   if(STRATA_NATIVE_EXPERTS)
     add_executable(nvfp4_volta_qpn_bench src/kernels/nvfp4_volta_qpn_bench.cpp)
     target_link_libraries(nvfp4_volta_qpn_bench PRIVATE strata_volta_qpn strata_kernels ggml-base CUDA::cudart)
