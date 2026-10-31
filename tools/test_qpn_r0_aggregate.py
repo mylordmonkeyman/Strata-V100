@@ -5,7 +5,8 @@ from qpn_r0_aggregate import PREFIX, SCOPE, inspect_record, scrub_log
 
 
 def record(**changes):
-    x = dict(schema=1, scope=SCOPE, instrumented=True,
+    x = dict(schema=2, scope=SCOPE, instrumented=True,
+             coalesced_layer_envelopes=True, callback_accounting_complete=True,
              event_pairs=9, observed_layers=3, product_layers=2,
              h2d_operations=4, h2d_bytes=4*2764816,
              trace_window_ms=14.0, h2d_envelope_ms=8.0,
@@ -21,6 +22,7 @@ class R0AggregateTests(unittest.TestCase):
                PREFIX + json.dumps(record(event_pairs=15)) + '\n')
         report = scrub_log(raw)
         self.assertEqual(report['chunk_records'], 2)
+        self.assertTrue(report['coalesced_layer_envelopes'])
         self.assertEqual(report['event_pairs'], 24)
         self.assertEqual(report['summed_per_chunk_envelopes_ms']['trace_window_ms'], 28.)
         self.assertIsNone(report['eligible_exposed_critical_path_ms'])
@@ -37,7 +39,10 @@ class R0AggregateTests(unittest.TestCase):
 
     def test_fail_closed_wrong_scope_and_invalid_events(self):
         for update in (dict(scope='full model speedup'), dict(instrumented=False),
-                       dict(schema=2), dict(h2d_envelope_ms=float('nan')),
+                       dict(schema=1), dict(callback_accounting_complete=False),
+                       dict(coalesced_layer_envelopes=False),
+                       dict(event_pairs=241), dict(observed_layers=0),
+                       dict(h2d_envelope_ms=float('nan')),
                        dict(trace_window_ms=1.0),
                        dict(h2d_products_overlap_ms=8.0),
                        dict(h2d_operations=-1), dict(observed_layers=49),
@@ -45,6 +50,14 @@ class R0AggregateTests(unittest.TestCase):
                        dict(event_pairs=1)):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 inspect_record(record(**update))
+
+    def test_large_callback_counts_under_small_pair_budget(self):
+        # 15347 expert-copy calls existed in prior first-chunk MMQ evidence.
+        # Coalescing prevents the previous 32768 pair ceiling from causing a
+        # diagnostic failure when product/wait callbacks are also frequent.
+        large = record(event_pairs=9, h2d_operations=15347,
+                       h2d_bytes=15347 * 2764816)
+        self.assertEqual(inspect_record(large)['h2d_operations'], 15347)
 
     def test_zero_event_record_and_boolean_rejected(self):
         empty = record(event_pairs=0, observed_layers=0, product_layers=0,

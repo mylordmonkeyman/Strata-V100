@@ -10,11 +10,13 @@ import math
 from pathlib import Path
 
 PREFIX = 'strata qpn-r0: '
-SCOPE = 'all_instrumented_supply_callbacks_not_complete_request'
+SCOPE = 'coalesced_layer_callback_envelopes_not_exposed_request'
 COUNTS = ('event_pairs', 'observed_layers', 'product_layers', 'h2d_operations', 'h2d_bytes')
 TIMES = ('trace_window_ms', 'h2d_envelope_ms', 'products_envelope_ms',
          'wait_envelope_ms', 'gather_envelope_ms', 'h2d_products_overlap_ms')
-KEYS = frozenset(('schema', 'scope', 'instrumented', *COUNTS, *TIMES))
+KEYS = frozenset(('schema', 'scope', 'instrumented',
+                  'coalesced_layer_envelopes', 'callback_accounting_complete',
+                  *COUNTS, *TIMES))
 
 
 def nonnegative(value, name, integer=False):
@@ -29,15 +31,22 @@ def nonnegative(value, name, integer=False):
 def inspect_record(record):
     if type(record) is not dict or set(record) != KEYS:
         raise ValueError('invalid R0 aggregate field allowlist')
-    if (record['schema'] != 1 or record['scope'] != SCOPE or
-            record['instrumented'] is not True):
+    if (record['schema'] != 2 or record['scope'] != SCOPE or
+            record['instrumented'] is not True or
+            record['coalesced_layer_envelopes'] is not True or
+            record['callback_accounting_complete'] is not True):
         raise ValueError('invalid R0 schema or instrumented scope')
     values = {k: nonnegative(record[k], k, integer=True) for k in COUNTS}
     values.update({k: nonnegative(record[k], k) for k in TIMES})
+    # Each of five operation categories owns at most one pair per observed layer.
+    # A coalesced pair can cover many callbacks; do not equate pairs with calls.
     if (values['product_layers'] > values['observed_layers'] or
-            values['observed_layers'] > 48 or values['event_pairs'] < values['h2d_operations'] or
+            values['observed_layers'] > 48 or
+            values['event_pairs'] > 5 * values['observed_layers'] or
+            values['event_pairs'] < values['observed_layers'] or
             values['event_pairs'] < values['product_layers'] or
-            (values['h2d_operations'] == 0) != (values['h2d_bytes'] == 0)):
+            (values['h2d_operations'] == 0) != (values['h2d_bytes'] == 0) or
+            (values['h2d_operations'] > 0 and values['event_pairs'] == 0)):
         raise ValueError('R0 event/layer count inconsistency')
     h, p, ov, trace = (values['h2d_envelope_ms'], values['products_envelope_ms'],
                        values['h2d_products_overlap_ms'], values['trace_window_ms'])
@@ -59,19 +68,21 @@ def scrub_log(text):
     # content, prompt lengths, tokens or logits can transit this allowlist.
     sums = {key: sum(rec[key] for rec in records) for key in (*COUNTS, *TIMES)}
     return {
-        'schema': 1,
-        'scope': 'R0 diagnostic aggregates only, not exposed full-request critical-path timing',
+        'schema': 2,
+        'scope': 'R0 coalesced first/last layer event envelopes, not exposed critical-path time',
         'chunk_records': len(records),
         'event_pairs': sums['event_pairs'],
         'h2d_operations': sums['h2d_operations'],
         'h2d_bytes': sums['h2d_bytes'],
         'summed_per_chunk_envelopes_ms': {k: sums[k] for k in TIMES},
         'diagnostic_only': True,
+        'coalesced_layer_envelopes': True,
         'full_request_latency_measured': False,
         'eligible_exposed_critical_path_ms': None,
         'qpn_candidate_executed': False,
         'r1_full_request_feasibility': 'UNKNOWN',
         'limitations': [
+            'Coalesced first/last CUDA events include ALL intervening idle gaps',
             'CUDA event timing includes instrumentation and submission/queue gaps',
             'Product envelopes are not proved QPN-eligible or hardware occupancy',
             'Event overlap is NOT the amount of removable critical-path work',
