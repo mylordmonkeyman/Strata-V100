@@ -68,3 +68,19 @@ any model use. Both require a source-locked quantizer, independent
 QAD-derived fixture, strict one-representation-per-expert lifetime,
 and a new R1 critical-path justification before any GPU prototype.
 The stopped early-staging and static-admission subtracks remain stopped.
+
+## Source-locked pinned ggml quantizer qualification (later 2026-10-31)
+
+**Host-only CI [41191656041](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41191656041) passed both hosted CPU and self-hosted compile-only jobs** at experimental commit 65b536e8b1944d46e704b957c6134231823efeb3. The new test executable (tests/host/qpn_q4tc_pinned_fixture.cpp) uses the actual pinned ggml-org/llama.cpp commit 3cf03257f219afbe7334045ff7c6a06ac68c627d through the existing Strata CMake dependency, with ggml_quantize_chunk, reference quantize_row functions and ggml dequantization. Its transient synthetic IPC is captured by the independent Python block oracle and is not published as raw bytes.
+
+Six deterministic QAD-shaped **synthetic** projection rows were tested: Q4_K gate/up K=2560, IQ4_NL down K=640, each with tail-preserved and tail-folded nonunit FP32 scales. Source FP32 identity, ggml type/row/block sizes, finite dequantization and independent block decode all passed. Actual pinned ggml quantization (not a handwritten substitute) yielded the following synthetic tail-preserved / tail-folded RMSE against the scaled source:
+
+| Role | Tail-preserved RMSE | Scale-folded RMSE | ggml_quantize_chunk bytes equal to quantize_row_*_ref |
+|---|---:|---:|---|
+| Gate Q4_K | 0.328902 | 0.328873 | yes / yes |
+| Up Q4_K | 0.133257 | 0.133257 | yes / yes |
+| Down IQ4_NL | 0.548816 | 0.548816 | **no / no** |
+
+**Important ABI/quality finding:** the pinned ggml IQ4_NL reference quantizer calls quantize_row_iq4_nl_impl with ntry=-1, while the production chunk quantizer uses ntry=7, so they are **not byte-identical on these inputs**. A source-locked Q4 artifact must explicitly choose and record the actual quantizer entry point, not assume the _ref fixture is the same algorithm. The follow-up extends the host-only test to independently dequantize and report error for the reference quantizer as well. No NVIDIA checkpoint bytes, real experts, logits, prompts or routing were used.
+
+This is genuine pinned-source **synthetic** Q4-0 progress, but not a QAD checkpoint fidelity test, model-quality qualification, Q4TC kernel performance result, measured R1 exposed-time opportunity, or authorization for a GPU prototype. The Q4 FP32 tail ABI and native CPU fastpath scale bypass remain unresolved. One resident representation per expert, unchanged production/default MMQ, and stopped QPN/early-staging tracks remain mandatory.

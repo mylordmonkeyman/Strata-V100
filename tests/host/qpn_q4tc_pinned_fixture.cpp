@@ -46,7 +46,7 @@ template<class B> void emit(const char* role,int k,int seed,float tail,ggml_type
         // Synthetic IPC only; CI captures stdout, no raw data in logs.
         std::cout<<role<<' '<<(fold?"folded":"tail")<<' '<<k<<' '<<(same?1:0)<<' '
                  <<hex(src.data(),src.size()*sizeof(float))<<' '
-                 <<hex(q.data(),bytes)<<' '
+                 <<hex(q.data(),bytes)<<' '<<hex(qr.data(),bytes)<<' '
                  <<hex(out.data(),out.size()*sizeof(float))<<'\n';
     }
 }

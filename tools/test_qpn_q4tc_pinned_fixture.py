@@ -42,8 +42,8 @@ class PinnedGgmlFixture(unittest.TestCase):
         rows={}
         for line in r.stdout.splitlines():
             f=line.split()
-            self.assertEqual(len(f),7)
-            role,mode,kt,ref,src_h,q_h,dq_h=f
+            self.assertEqual(len(f),8)
+            role,mode,kt,ref,src_h,q_h,qref_h,dq_h=f
             self.assertIn(role,TAILS)
             self.assertIn(mode,("tail","folded"))
             k=int(kt)
@@ -54,27 +54,34 @@ class PinnedGgmlFixture(unittest.TestCase):
             if mode=="folded":expected=[f32(v*TAILS[role]) for v in expected]
             self.assertEqual(src,tuple(expected))
             q=bytes.fromhex(q_h)
+            qref=bytes.fromhex(qref_h)
+            self.assertEqual(int(q==qref),int(ref))
             kind="IQ4_NL" if role=="down" else "Q4_K"
             self.assertEqual(len(q),k//(32 if role=="down" else 256)*
                              (18 if role=="down" else 144))
+            self.assertEqual(len(qref),len(q))
+            ref_dq=decode_row(qref,kind,k)
             dq=floats(dq_h,k)
             oracle=decode_row(q,kind,k)
             worst=max(abs(a-b) for a,b in zip(dq,oracle))
             self.assertLessEqual(worst,1e-5*max(1,max(map(abs,dq))),
                                  "independent decoder disagrees with pinned ggml")
             self.assertTrue(all(map(math.isfinite,dq)))
-            rows[(role,mode)]=(src,dq,int(ref),worst)
+            rows[(role,mode)]=(src,dq,int(ref),worst,ref_dq)
         self.assertEqual(len(rows),6)
         for role in TAILS:
-            src,dq,ref,_=rows[(role,"tail")]
-            _,folded,ref_folded,_=rows[(role,"folded")]
+            src,dq,ref,_,ref_dq=rows[(role,"tail")]
+            _,folded,ref_folded,_,_=rows[(role,"folded")]
             if role!="down":self.assertEqual((ref,ref_folded),(1,1))
             target=[v*TAILS[role] for v in src]
             preserved=rmse(target,[v*TAILS[role] for v in dq])
             folded_err=rmse(target,folded)
+            ref_err=rmse(target,[v*TAILS[role] for v in ref_dq])
             self.assertGreater(preserved,0)
             self.assertGreater(folded_err,0)
-            self.assertTrue(math.isfinite(preserved) and math.isfinite(folded_err))
+            self.assertGreater(ref_err,0)
+            self.assertTrue(math.isfinite(preserved) and math.isfinite(folded_err) and math.isfinite(ref_err))
             print(f"Q4TC synthetic pinned ggml {role}: tail_RMSE={preserved:.6g} "
-                  f"folded_RMSE={folded_err:.6g} ref_match={ref}/{ref_folded}")
+                  f"folded_RMSE={folded_err:.6g} ref_RMSE={ref_err:.6g} "
+                  f"ref_match={ref}/{ref_folded}")
 if __name__=="__main__":unittest.main()
