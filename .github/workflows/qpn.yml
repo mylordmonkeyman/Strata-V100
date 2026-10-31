@@ -21,6 +21,11 @@ jobs:
       - run: ctest --test-dir build-qpn-host -R '^nvfp4_qpn_host$' --output-on-failure
       - run: python3 -m unittest discover -s tools -p test_qpn_audit.py -v
       - run: python3 -m unittest discover -s tools -p test_qpn_prefill.py -v
+      - name: Validate opt-in MMQ route-publication and staged-tail predicates
+        run: |
+          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -pthread \
+            tests/host/qpn_mmq_early_stage_test.cpp -o /tmp/qpn-mmq-stage-host
+          /tmp/qpn-mmq-stage-host
       - name: Test checkpoint fixture extraction in an isolated Python environment
         run: |
           python3 -m venv "$RUNNER_TEMP/qpn-extract-venv"
