@@ -18,6 +18,36 @@ Local host-only command:
 python3 -m unittest discover -s tools -p 'test_qpn_d4_oracle.py' -v
 ```
 
+
+## Pinned D4 producer-algorithm host reference (independent M3 increment)
+
+`tools/test_qpn_d4_quantize_reference.py` emulates the pinned ggml
+`quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4>` arithmetic on synthetic FP32
+source rows, including 32-value-group maximum magnitudes, scaled int8
+rounding with CUDA `roundf` tie-away-from-zero semantics, four FP32 scale
+words per 128-column physical block, and column-block-major row pitch.
+The test also emulates the independently generated compact inverse-token
+scatter mapping, including repeated source tokens in distinct compact rows.
+
+The host-only reference checks the independent `decode_d4_to_f16` oracle
+at widths 128/256/640/2560, with padded physical rows and precise
+128-column block-boundary indexing. It bounds reconstructed error relative
+to synthetic source values, tests ties-away-from-zero, and fail-closes on
+synthetic all-zero and nonfinite subblocks rather than inventing CUDA's
+behavior for such inputs. Combined with the preexisting four oracle tests,
+**8 host tests passed**:
+
+```bash
+python3 -m unittest discover -s tools -p 'test_qpn_d4_*.py' -v
+```
+
+**Evidence classification:** this is a *source-algorithm host simulation*,
+NOT a CUDA compilation, actual ggml GPU quantizer-output parity,
+real-model quality test, or improved latency. All-zero block semantics
+and exact float-operation/compiler behavior require direct device
+verification; a matching host simulation alone cannot qualify M3.
+Neither canonical nor QPN weight residency was changed.
+
 ## Not yet qualified / independent gates
 
 Host oracle coverage is **not** real ggml quantize/scatter device-output parity, compiled-CUDA or device numerical verification. The experimental CUDA stage still requires a pinned CUDA-12.8 compile, actual producer D4 X/H reads with independently verified `ne1`, oracle parity, tail/invalid-count checks, changed-input Graph, guards and sanitizer checks. Full model requires earlier divergence attribution, FP32-versus-D4 controls, 100+ held-out quality prompts and accepted decode verification. Do not dispatch this kernel in a model or claim quality/performance until these tests pass.
