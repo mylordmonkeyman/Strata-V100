@@ -13,3 +13,58 @@
 ## Q4-0 decision
 
 **PARTIAL, host-source geometry/ABI confirmed; fixture and numerical gates OPEN.** The next permissible work is host-only verification of pinned ggml block sizes and a small, private, source-locked quantization/dequantization fixture with independent oracle, no GPU residency. Before any Q4 GPU test, demonstrate exact tail handling, native Q4/MMQ build eligibility, immutable source identity, one representation per expert, and a bounded R1 performance hypothesis. Never introduce canonical+Q4TC sidecars or overlapping old/new same-expert GPU buffers. No branch beyond the three user-authorized experimental branches, no production change, and no GPU test is authorized by this audit.
+
+## Cross-phase tail-consumer audit and synthetic host oracle (later 2026-10-31)
+
+**New Q4-0 blocker:** Appending a 16-byte scale tail to all-Q4 blobs is
+insufficient even if the loader and GPU grouped/MMQ layouts are extended.
+The existing native CPU fast paths **return before applying the scales**:
+
+- [native_expert.cpp](../../src/kernels/cpu/native_expert.cpp):
+  when `STRATA_KQ256=1`, `nt>=2`, `gu_type=12`, the Q4_K GU path
+  calls `kq256_gu_rows` and returns *before* `sg/su` are read.
+  [kq_avx2.cpp](../../src/kernels/cpu/kq_avx2.cpp) takes no global scale
+  arguments and computes SwiGLU itself.
+- On the host's AVX2-capable CPU, the normally enabled `nt>=2`,
+  `d_type=20` IQ4_NL down path calls `iq4nl256_down_rows` and
+  returns *before* `s_down` is read. Its
+  [iq_avx2.cpp](../../src/kernels/cpu/iq_avx2.cpp) implementation takes
+  no global scale argument. The one-token fallback does apply a
+  `tail_off` scale if present. A hypothetical tail-bearing Q4 pack
+  would therefore risk verification-window-length-dependent results.
+- CUDA grouped native reads `NativeExpertLayout.tail_off`. The prefill
+  MMQ gather, `swiglu_scaled`, `down_row_scales`, and combine depend
+  on `NativeFmt.tail_off` (see
+  [prefill.cpp](../../src/prefill/prefill.cpp)). A versioned Q4-tail ABI
+  must consistently cover loader/pack metadata, native CPU fast paths,
+  native GPU, prefill MMQ, and verification. No such runtime change
+  has been implemented.
+
+**Host-only numerical fixture added:** `tools/qpn_q4tc_block_oracle.py`
+and `tools/test_qpn_q4tc_block_oracle.py` independently exercise
+synthetic Q4_K 256-element blocks (all 6-bit scale/min fields, both
+nibble halves and subblock boundaries), IQ4_NL 32-element blocks (all
+16 nonlinear codebook entries), actual K=2560/640 projection widths,
+nonunit FP32 gate/up/down scale placement relative to SwiGLU, and
+malformed/nonfinite input rejection. Four tests passed locally with
+Python stdlib only. Existing hosted `qpn.yml` test discovery runs
+`test_qpn*.py` on push without any new workflow privileges.
+
+```bash
+python3 -m unittest discover -s tools -p 'test_qpn_q4tc_block_oracle.py' -v
+```
+
+This is **synthetic dequantization/scale-placement reference only**:
+not an actual quantizer, QAD model fixture, pinned ggml/native runtime
+parity, GPU benchmark, quantization-quality test or performance result.
+No private data, weight conversion, cache or GPU job was used.
+
+**Decision:** Q4-0 remains PARTIAL and R1 exposed-time UNKNOWN. A
+*tail-free, scale-folded* QAD-derived Q4 pack can use the current native
+ABI but changes quantization error and must not be called exact
+same-math QAD. A *tail-bearing* versioned Q4 ABI instead requires
+scale-correct CPU fast paths, MMQ, GPU, loader and verification before
+any model use. Both require a source-locked quantizer, independent
+QAD-derived fixture, strict one-representation-per-expert lifetime,
+and a new R1 critical-path justification before any GPU prototype.
+The stopped early-staging and static-admission subtracks remain stopped.
