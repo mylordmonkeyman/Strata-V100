@@ -34,6 +34,13 @@ if(STRATA_ENABLE_VOLTA_QPN)
       message(FATAL_ERROR "Experimental QPN R1 verification capture requires strata_engine")
     endif()
   endif()
+  # Standard host-only M3 test: same verifier that the manual CUDA
+  # ggml-producer parity target invokes, with deliberate corrupted D4 bytes.
+  # No CUDA driver, GPU lock, model artifacts, or expert weights needed.
+  if(STRATA_BUILD_TESTS)
+    add_executable(nvfp4_qpn_d4_source_host_test tests/host/qpn_d4_source_check_test.cpp)
+    add_test(NAME nvfp4_qpn_d4_source_host COMMAND nvfp4_qpn_d4_source_host_test)
+  endif()
   # Manually selected synthetic D4 correctness target. Not registered with CTest:
   # the existing GPU lock and job-idle checks are mandatory before execution.
   if(STRATA_BUILD_TESTS)

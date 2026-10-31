@@ -188,3 +188,38 @@ synthetic device parity on the existing V100, observing preexisting
 runner-lock/concurrency rules. Do not proceed to any QPN cache R2 code,
 automatic Q4 pivot, or model-performance claim on this basis. M3 device
 qualification and timing-based R1 are still **UNKNOWN/unqualified**.
+
+
+## M3 source-to-quantization independent check (host-qualified; device pending)
+
+The first real-ggml-producer CUDA parity test initially compared
+QPN staging with a host D4 decode of **the same device-produced bytes**.
+That is necessary, but it could pass even if the producer's scales/codes
+did not correspond to the original FP32 synthetic input.
+
+The parity target now calls a separate
+`qpn_m3::verify_quantized_source`, shared with a **host-only**
+`nvfp4_qpn_d4_source_host` CTest. It directly checks, for every
+32-value group of the four original 128/256/640/2560 source shapes:
+
+- each real MMQ D4 FP32 scale against `1 / (127 / max_abs(source))`;
+- each quantized int8 code's reconstruction against **its original FP32
+  value**, with explicitly bounded Q8 rounding error;
+- original-to-compact row identity, including duplicate token mappings
+  in the six-row scatter fixture;
+- exact expected source and physical buffer bounds, and refusal of
+  corrupted scale/code/short buffers, while ignoring poisoned padding.
+
+The new host-only test deliberately corrupts scales, codes and buffer
+lengths; all cases must reject. Unlike early test implementations, this
+test does **not** rely on C `assert`, which disappears under Release
+`NDEBUG`. The exact host verifier was compiled with
+`c++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -pedantic`
+and passed eight shape/scatter combinations. It also passed a
+host-only AddressSanitizer/UBSan run.
+
+**This adds no expert weights or second resident weight format.**
+It neither invokes a GPU nor certifies device numerical parity. The
+manual producer-stage CUDA test still needs to compile and run on the
+existing CUDA12.8 V100 under the established lock, followed by
+independent M3 quality controls. R1 remains UNKNOWN.

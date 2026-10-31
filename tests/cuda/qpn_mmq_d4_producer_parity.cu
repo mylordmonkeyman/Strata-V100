@@ -4,9 +4,11 @@
 #include "strata/kernels/nvfp4_volta_qpn.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "ggml.h"
+#include "../host/qpn_d4_source_check.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -36,11 +38,7 @@ struct Stream {
     Stream() { ck(cudaStreamCreateWithFlags(&value, cudaStreamNonBlocking)); }
     ~Stream() { if (value) cudaStreamDestroy(value); }
 };
-struct Block {
-    float d4[4];
-    std::int8_t qs[128];
-};
-static_assert(sizeof(Block) == 144, "MMQ block_q8_1_mmq D4 ABI changed");
+using Block = qpn_m3::D4Block;
 
 std::uint16_t half_bits(float f) {
     const half result = __float2half_rn(f);
@@ -124,6 +122,7 @@ void run(int tokens, int columns, bool scattered) {
 
     std::vector<std::uint8_t> actual_q8(used);
     ck(cudaMemcpy(actual_q8.data(), packed.ptr, used, cudaMemcpyDeviceToHost));
+    qpn_m3::verify_quantized_source(actual_q8, source, tokens, rows, columns, scattered);
     const auto want = expected_from_producer(actual_q8, rows, columns);
     std::vector<std::uint16_t> got(want.size() + 16);
     ck(cudaMemcpy(got.data(), h.ptr, got.size() * sizeof(std::uint16_t),
