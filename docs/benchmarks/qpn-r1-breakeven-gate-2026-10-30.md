@@ -113,3 +113,35 @@ The older memory and restore-byte estimates are demand proxies only;
 they do not establish physical DMA, conversions, allocatable scratch,
 or a viable lifetime schedule. No new GPU jobs or weight-set variants
 are authorized by this gate.
+
+## Cross-phase single-format gate — source-level checkpoint (2026-10-30)
+
+**Never hold two differently encoded/packed weight copies in VRAM for one
+expert.** This restriction alone does not establish how native verification
+can read a packed expert's weights. The existing native grouped verifier
+takes canonical expert pointers/row offsets and has no demonstrated
+decoder for QPN-packed expert layouts. The original held-out screen shows
+canonical-format demand for selected packed experts, including 203 distinct
+native verification consumers at the 2 GiB replacement budget.
+
+To prevent a vacuous `single_representation_per_expert=true` assertion from
+authorizing work, the R1 feasibility stage additionally requires
+`single_format_native_access_planned=true`: a **source-grounded, bounded,
+preimplementation** design that serves all canonical-format consumers
+through the sole resident representation (e.g., a directly compatible
+reader) or safely retires the previous layout before a sequential format
+change. A known absence yields STOP; an unknown plan remains UNKNOWN.
+This is a design feasibility assertion, **not** a demand that unbuilt code
+pass R3 quality tests.
+
+The R3 final stage separately requires
+`single_format_native_access_qualified=true` to establish that the
+actually implemented candidate satisfies that plan correctly for native
+verification and fallback, in addition to its independent model quality,
+memory, decode and full-request latency gates. A false qualification
+yields FAIL and a missing one prevents PASS. These are evidence assertions,
+not automatically verified by the calculator.
+
+No additional GPU testing or packed-cache prototype is authorized:
+the current R1 stage has neither the requisite critical-path timing
+nor a validated single-format native-access plan.

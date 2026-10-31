@@ -15,7 +15,8 @@ NUMERIC_FIELDS = ("mmq_prefill_s", "mmq_decode_s", "qpn_prefill_exposed_s",
 TIMING_FIELDS = NUMERIC_FIELDS[:-2]
 QUALIFICATIONS = ("independent_heldout_qualified", "actual_decode_qualified",
                   "numerical_quality_qualified", "critical_path_measured_qualified",
-                  "memory_fit_measured_qualified", "single_representation_per_expert")
+                  "memory_fit_measured_qualified", "single_representation_per_expert",
+                  "single_format_native_access_qualified")
 
 
 def assess(x):
@@ -45,11 +46,15 @@ def assess(x):
             "Verifier windows do not establish accepted-token autoregressive decode.",
             "Qualification flags are input assertions, not independently verified by this calculator.",
             "No model numerical-quality qualification is implied by a projected speedup.",
-            "At no time may one expert have two differently encoded resident copies of the same weights."
+            "At no time may one expert have two differently encoded resident copies of the same weights.",
+            "Native verification and fallback must work from the sole resident layout or a safe sequential transition; qualified R3 execution is mandatory."
         ]
     }
     if x.get("single_representation_per_expert") is False:
         out.update(decision="FAIL", failure_reason="dual-format same-expert residency prohibited")
+        return out
+    if x.get("single_format_native_access_qualified") is False:
+        out.update(decision="FAIL", failure_reason="native fallback/verification cannot use sole resident representation")
         return out
     if x.get("packed_bytes") is not None and x.get("safe_headroom_bytes") is not None:
         fits_bound = x["packed_bytes"] <= x["safe_headroom_bytes"]
@@ -92,7 +97,8 @@ def assess_feasibility(x):
               "additional_peak_bytes", "available_incremental_bytes")
     gates = ("baseline_measured", "heldout_routes_measured",
              "exposed_compute_measured", "transition_cost_bounded",
-             "memory_budget_bounded", "single_representation_per_expert")
+             "memory_budget_bounded", "single_representation_per_expert",
+             "single_format_native_access_planned")
     if not isinstance(x, dict):
         raise ValueError("expected feasibility object")
     for k in fields:
@@ -112,7 +118,8 @@ def assess_feasibility(x):
                       "Candidate status requires DDR-1 and safety review before implementation.",
                       "Overhead includes regrouping, dispatch, lost overlap, fallback and canonical restoration.",
                       "5% means request latency reduction, not throughput increase.",
-                      "Never keep differently packed/encoded copies of any expert's same weights simultaneously resident."])
+                      "Never keep differently packed/encoded copies of any expert's same weights simultaneously resident.",
+                      "R1 requires a source-grounded, bounded one-layout plan for every prefill fallback and native verification consumer; not implemented-code qualification."])
     base = x.get("baseline_request_s")
     if base == 0:
         raise ValueError("baseline request must be positive")
@@ -126,6 +133,9 @@ def assess_feasibility(x):
         raise ValueError("removable time exceeds complete baseline")
     if x.get("single_representation_per_expert") is False:
         out.update(decision="STOP", reason="dual-format same-expert residency prohibited")
+        return out
+    if x.get("single_format_native_access_planned") is False:
+        out.update(decision="STOP", reason="proposed packed layout has no bounded single-format native fallback/verification plan")
         return out
     peak, available = x.get("additional_peak_bytes"), x.get("available_incremental_bytes")
     if peak is not None and available is not None and peak > available:

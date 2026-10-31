@@ -19,7 +19,8 @@ class BreakEvenTests(unittest.TestCase):
         x.update(independent_heldout_qualified=True,
                  actual_decode_qualified=True, numerical_quality_qualified=True,
                  critical_path_measured_qualified=True, memory_fit_measured_qualified=True,
-                 single_representation_per_expert=True)
+                 single_representation_per_expert=True,
+                 single_format_native_access_qualified=True)
         self.assertEqual(assess(x)["decision"], "PASS")
 
     def test_slow_fails(self):
@@ -80,6 +81,19 @@ class BreakEvenTests(unittest.TestCase):
         self.assertEqual(r['decision'], 'UNKNOWN')
         self.assertIn('single_representation_per_expert', r['unqualified_gates'])
 
+    def test_cross_phase_native_access_cannot_be_skipped(self):
+        x=self.base()
+        x.update(independent_heldout_qualified=True, actual_decode_qualified=True,
+                 numerical_quality_qualified=True, critical_path_measured_qualified=True,
+                 memory_fit_measured_qualified=True, single_representation_per_expert=True)
+        r=assess(x)
+        self.assertEqual(r['decision'],'UNKNOWN')
+        self.assertIn('single_format_native_access_qualified',r['unqualified_gates'])
+        x['single_format_native_access_qualified']=False
+        r=assess(x)
+        self.assertEqual(r['decision'],'FAIL')
+        self.assertIn('sole resident',r['failure_reason'])
+
     def test_missing_is_unknown(self):
         x=self.base()
         del x["restore_s"]
@@ -95,7 +109,8 @@ class FeasibilityTests(unittest.TestCase):
                     available_incremental_bytes=200, baseline_measured=True,
                     heldout_routes_measured=True, exposed_compute_measured=True,
                     transition_cost_bounded=True, memory_budget_bounded=True,
-                    single_representation_per_expert=True)
+                    single_representation_per_expert=True,
+                    single_format_native_access_planned=True)
 
     def test_candidate_does_not_require_unbuilt_candidate_quality(self):
         r=assess_feasibility(self.data())
@@ -141,6 +156,23 @@ class FeasibilityTests(unittest.TestCase):
         for bad in ('true', 1, 0, None):
             x=self.data()
             x['single_representation_per_expert']=bad
+            with self.assertRaises(ValueError): assess_feasibility(x)
+
+    def test_cross_phase_native_plan_absent_or_false_not_candidate(self):
+        x=self.data()
+        x.pop('single_format_native_access_planned')
+        r=assess_feasibility(x)
+        self.assertEqual(r['decision'],'UNKNOWN')
+        self.assertIn('single_format_native_access_planned',r['unqualified_gates'])
+        x['single_format_native_access_planned']=False
+        r=assess_feasibility(x)
+        self.assertEqual(r['decision'],'STOP')
+        self.assertIn('single-format',r['reason'])
+
+    def test_cross_phase_native_plan_bad_value_rejected(self):
+        for bad in ('true',1,0,None):
+            x=self.data()
+            x['single_format_native_access_planned']=bad
             with self.assertRaises(ValueError): assess_feasibility(x)
 
     def test_headroom_alone_unknown(self):

@@ -47,3 +47,32 @@ In-memory mutated copies remain useful for negative tests only.
 These are integrity checks of the available aggregates, not independent
 authentication of the original private GPU measurements or representative
 heldout/performance qualification. The R1 decision remains UNKNOWN.
+
+## Cross-phase packed-only static compatibility screen (2026-10-30)
+
+The aggregate audit now distinguishes an optimistic prefill routing
+opportunity from a **whole-request, unchanged-native-MMQ packed-only
+plan without format changes**. For every published nonzero selected
+budget, the held-out routing screen reports both selected packed-expert
+prefill canonical-format demands and distinct native-verification
+consumers. Accordingly every scenario is labeled
+`CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS`. This is a conditional
+logical incompatibility with *unchanged* native readers and no format
+transition. It does NOT prove that an on-the-fly packed-layout decoder,
+a safe strictly sequential conversion, or a different one-copy format
+is impossible or slower.
+
+The original synthetic held-out screen at 2048 MiB selected 768
+experts, observed 1,198 prefill canonical-format demand instances
+and 203 distinct selected experts actually consumed during native
+verification. The demand counts are **not** DMA/conversion counts and
+must never be added to compute latency as though transfers occurred.
+The audit uses the previously committed immutable aggregate files,
+not a new model run or private expert identities.
+
+A future R1 prototype-candidate decision requires a **source-grounded,
+bounded** single-format native-access plan as well as independent
+held-out, memory and exposed critical-path evidence. The corresponding
+R3 execution-quality gate is separate. No mixed-format same-expert
+double residency is permitted, even temporarily. Static admission
+remains STOPPED; R1 remains UNKNOWN.

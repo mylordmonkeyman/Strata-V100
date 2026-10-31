@@ -34,6 +34,11 @@ class AggregateAuditTests(unittest.TestCase):
         self.assertAlmostEqual(result['supply_observation']['median_prefill_selective_ms'], 17070.4)
         self.assertGreater(result['supply_observation']['first_chunk_selective_h2d_reduction_fraction'], .32)
         self.assertLess(result['supply_observation']['median_prefill_reduction_fraction'], .008)
+        for row in result['routing_scenarios']:
+            self.assertGreater(row['native_verification_consumers'], 0)
+            self.assertEqual(
+                row['no_transition_packed_only_reference_native_screen'],
+                'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
 
     def test_reject_false_eligibility_or_missing_routing(self):
         h = copy.deepcopy(self.heldout)
@@ -85,6 +90,17 @@ class AggregateAuditTests(unittest.TestCase):
         s = copy.deepcopy(self.supply)
         s['median_prefill_ms']['selective-supply'] += 1
         with self.assertRaises(ValueError): audit(self.heldout, s)
+
+    def test_cross_phase_screen_never_claims_transition_measurement(self):
+        h=copy.deepcopy(self.heldout)
+        for item in h['scenarios']:
+            item['optimistic_verification_restore_bytes']=0
+            item['optimistic_prefill_restore_bytes']=0
+        r=audit(h,self.supply)
+        for row in r['routing_scenarios']:
+            self.assertEqual(row['no_transition_packed_only_reference_native_screen'],
+                             'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS')
+        self.assertNotIn('measured_transition_s',json.dumps(r))
 
     def test_env_controls_immutable(self):
         h = copy.deepcopy(self.heldout)

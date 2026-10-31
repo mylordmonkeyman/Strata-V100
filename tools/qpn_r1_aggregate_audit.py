@@ -97,15 +97,22 @@ def audit(heldout, supply):
               'zero eligible complete groups must cover zero routed entries')
         check(math.isclose(entries / total, share, rel_tol=0, abs_tol=1e-12),
               'share/entry arithmetic')
-        integer(item.get('prefill_packed_canonical_fallback_expert_uses'), 'canonical fallback demand')
+        prefill_native_uses = integer(
+            item.get('prefill_packed_canonical_fallback_expert_uses'),
+            'canonical fallback demand')
         restores = integer(item.get('verification_distinct_packed_experts_to_restore'),
                            'native verification consumers')
         check(restores <= selected, 'native consumers cannot exceed selected experts')
         coverage.append({'replacement_budget_mib': expected_budget,
                          'optimistic_entry_share_fraction': share,
                          'optimistic_complete_groups': groups,
-                         'canonical_fallback_uses': item['prefill_packed_canonical_fallback_expert_uses'],
-                         'native_verification_consumers': restores})
+                         'canonical_fallback_uses': prefill_native_uses,
+                         'native_verification_consumers': restores,
+                         'no_transition_packed_only_reference_native_screen': (
+                             'NO_PACKED_WORK' if selected == 0 or groups == 0
+                             else 'CONFLICTS_WITH_REFERENCE_NATIVE_CONSUMERS'
+                             if prefill_native_uses > 0 or restores > 0
+                             else 'NOT_REFUTED_BY_AGGREGATE_BUT_UNQUALIFIED')})
     check(supply.get('order') == list(ORDER), 'matched supply ABBA order')
     check(supply.get('performance_only') is True and
           supply.get('numerical_quality_qualified') is False and
@@ -198,6 +205,8 @@ def audit(heldout, supply):
             'Selective H2D counts are first-chunk only; timings span complete prefill in other processes.',
             'Native MMQ supply evidence does not establish QPN model acceleration or exposed compute.',
             'Demand proxy restore bytes do not establish measured or necessary DMA.',
+            'Static packed-only with unchanged native verifier conflicts with observed canonical consumers; a new compatible one-layout reader or sequential transition would be a different, unqualified design.',
+            'No same-expert dual-format VRAM residency or duplicate-copy experiment is permitted.',
             'No further QPN variant, Q4 conversion, packed-cache prototype, or GPU rerun is authorized.',
         ],
     }
