@@ -57,5 +57,25 @@ int main() {
         pub.store(0,std::memory_order_release);
         worker.join(); issuer.join();
     }
+    // Reproduce the 2047-token request's 1024 stream-all + 1023 staged
+    // tail. The previous runtime guard wrongly rejected the second chunk.
+    {
+        using strata::prefill::detail::EarlyStageDecision;
+        using strata::prefill::detail::qpn_mmq_early_stage_phase;
+        require(qpn_mmq_early_stage_phase(true,true,false,true,true)
+                    == EarlyStageDecision::Active, "first 1024 stream-all chunk");
+        require(qpn_mmq_early_stage_phase(true,false,true,false,false)
+                    == EarlyStageDecision::Inactive, "following 1023 staged tail must be accepted");
+        require(qpn_mmq_early_stage_phase(true,false,false,false,false)
+                    == EarlyStageDecision::Invalid, "standalone staged request must reject");
+        require(qpn_mmq_early_stage_phase(true,true,false,false,false)
+                    == EarlyStageDecision::Invalid, "unsupported stream-all must reject");
+        require(qpn_mmq_early_stage_phase(true,true,false,true,false)
+                    == EarlyStageDecision::Invalid, "early staging needs H2D omission");
+        require(qpn_mmq_early_stage_phase(false,true,false,false,false)
+                    == EarlyStageDecision::Inactive, "default off unchanged");
+        require(qpn_mmq_early_stage_phase(false,false,true,false,false)
+                    == EarlyStageDecision::Inactive, "default staged tail unchanged");
+    }
     std::puts("Early MMQ staging predicate: all host tests passed");
 }

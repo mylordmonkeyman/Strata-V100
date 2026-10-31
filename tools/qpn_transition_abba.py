@@ -293,6 +293,17 @@ def main():
             save()
             if code:
                 row['startup_diagnostics'] = safe_failure_diagnostics(log)
+                if a.early_stage_abba:
+                    # Fixed source-controlled phrases only: no raw log lines,
+                    # layer/expert IDs, paths, logits or other private content.
+                    private_text = log.read_text(errors='replace')
+                    row['early_stage_failure_flags'] = {
+                        'unsupported_phase': ('experimental early MMQ staging requires selective-supply=1'
+                                              in private_text),
+                        'stage_copy_counter_mismatch': ('experimental early MMQ stage/copy omission mismatch'
+                                                        in private_text),
+                        'source_copy_failed': ('the expert source could not copy experts' in private_text),
+                    }
                 summary['status'] = 'failed_execution'
                 save()
                 return 2

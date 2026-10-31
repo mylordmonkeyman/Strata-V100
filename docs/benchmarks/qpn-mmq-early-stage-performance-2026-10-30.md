@@ -39,3 +39,18 @@ The exact CLI must use the existing runner's pinned source/model and private pro
 **Promotion/stop:** only retain for ongoing performance work if measured *full-request* speedup survives tracing controls, numerical output parity, unchanged memory and decode, and spec ≥5% materiality target. If `cpu_jobs_omitted` is near zero, no real CPU critical-path work is saved, H2D differs unexpectedly, quality fails, or request time regresses: **STOP**, do not run additional random sweeps. Rollback is simply `STRATA_QPN_MMQ_EARLY_STAGE=0` or not compiling the experimental gate. No change to production `main`.
 
 **Status now:** source-only performance candidate with verified host predicate tests. **CUDA / full-model build, any actual CPU-copy omission, and speedup are unmeasured.** R1 packed single-representation feasibility remains UNKNOWN, static packed admission STOPPED, and no dual-format VRAM tests are permitted.
+
+
+## Corrective first-run finding (2026-10-30, source 9bcc483)
+
+[One-shot run 41167975170](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41167975170) compiled the complete CUDA12.8 binary and passed 17 Python tests plus the C++ publication test. The unchanged selective-H2D baseline process completed with original-MMQ prefill 2,047 tokens, prefill 19,320.7 ms, TTFT 67,104.6 ms, zero executed QPN groups, 15,347 expert stream entries, 6,027 host jobs, 4,939 H2D-skipped experts and 2,536 H2D-skipped staging jobs. **The early-staging candidate exited 1 before the prefill summary**; no speedup, parity or CPU bytes saved can be inferred. This is **execution failure**, not an observed performance regression.
+
+Source review identified a concrete phase-guard defect: with pinned request geometry, stream-all first consumes 1,024 tokens but the 1,023-token trailing chunk uses staged prefill. The new request-wide `STRATA_QPN_MMQ_EARLY_STAGE=1` flag was erroneously rejected on any `!stream_all` chunk. A 72.4-second failing candidate process is consistent with that staged-tail rejection; raw private logs were deliberately not uploaded, so this is a source-derived causal diagnosis, **not direct confirmation from the raw error line**.
+
+Corrective implementation:
+- `qpn_mmq_early_stage_phase()` accepts the opt-in for genuinely eligible stream-all chunks, makes it **inactive** on a staged tail only when the same request previously had a stream-all chunk, and still fails closed for an unsupported staged-only request.
+- An explicit host test covers 1,024 stream-all followed by a 1,023 staged tail, plus invalid standalone and control-off cases. The prior publication/issuer worker test remains.
+- Future failed executions add three allowlisted boolean flags for known static error classes; they do not export private logs, paths, routes or logits.
+- The **single corrective one-shot** is triggered by a new, distinct marker in the same existing lock-protected workflow; no generic recurring benchmark trigger or packed-weight alternative is introduced.
+
+The first attempt's [sanitized aggregate](https://github.com/mylordmonkeyman/Strata-V100/actions/runs/41167975170/artifacts/13029538770) is preserved. Do not compare its baseline timing to its failed candidate as an A/B result. Only a fully completed, parity-passing corrected run can advance this hypothesis; a measured negative outcome should close it rather than prompt more broad sweeps.

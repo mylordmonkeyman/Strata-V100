@@ -1,0 +1,7 @@
+single corrective one-shot 2026-10-30 original-MMQ early staging ABBA
+first attempt 41167975170: baseline completed, candidate exited during 1023 staged tail
+root-cause candidate: runtime guard rejected STRATA_QPN_MMQ_EARLY_STAGE=1 on non-stream-all remainder
+fix: allow opt-in to be inactive on staged tail after stream-all; reject standalone ineligible staged runs
+host regression: exactly 1024 stream-all followed by 1023 staged tail
+no second expert-weight representation, no variant sweep, no raw model artifacts exported
+run only under existing global gpu.lock and idle V100 safeguards

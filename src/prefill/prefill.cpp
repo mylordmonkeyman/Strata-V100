@@ -3287,17 +3287,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             mmq_supply_diag = true;
             mmq_skip = std::atoi(v) != 0;
         }
-        // Deliberately separate from the existing DMA-only control:
-        // an early CPU job skip is safe only when the issuer will also skip
-        // that expert after the same routing publication.
-        if (const char* early = std::getenv("STRATA_QPN_MMQ_EARLY_STAGE");
-            early && std::atoi(early) != 0) {
-            if (!mmq_supply_diag || !mmq_skip) {
-                err = "experimental early MMQ staging requires selective-supply=1 and valid stream-all W4A8";
-                return false;
-            }
-            mmq_early_stage = true;
+        // The last chunk of a stream-all request can contain <1024 tokens
+        // and legitimately use staged MMQ. The request-level early-stage
+        // opt-in must be inert on that tail, not abort the whole request.
+        const bool early_stage_requested = [] {
+            const char* v = std::getenv("STRATA_QPN_MMQ_EARLY_STAGE");
+            return v && std::atoi(v) != 0;
+        }();
+        const auto early_phase = detail::qpn_mmq_early_stage_phase(
+            early_stage_requested, stream_all, staged_after_stream_all,
+            mmq_supply_diag, mmq_skip);
+        if (early_phase == detail::EarlyStageDecision::Invalid) {
+            err = "experimental early MMQ staging requires selective-supply=1 on an eligible stream-all request";
+            return false;
         }
+        mmq_early_stage = early_phase == detail::EarlyStageDecision::Active;
 #endif
         uint64_t supply_copies = 0, supply_skipped = 0, supply_bytes = 0, supply_skipped_bytes = 0;
         uint64_t supply_jobs = 0, supply_skipped_jobs = 0;

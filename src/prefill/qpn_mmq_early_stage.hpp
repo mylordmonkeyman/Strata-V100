@@ -8,6 +8,21 @@
 #include <atomic>
 #include <cstdint>
 namespace strata::prefill::detail {
+// A stream-all request may finish with a shorter staged tail chunk.
+// The opt-in remains configured for the whole request, but has no
+// staging job to skip on that tail. Do not reject or modify its path.
+enum class EarlyStageDecision { Inactive, Active, Invalid };
+
+constexpr EarlyStageDecision qpn_mmq_early_stage_phase(
+        bool requested, bool stream_all, bool staged_after_stream_all,
+        bool matched_mmq_selective, bool mmq_skip) {
+    if (!requested) return EarlyStageDecision::Inactive;
+    if (stream_all)
+        return (matched_mmq_selective && mmq_skip)
+            ? EarlyStageDecision::Active : EarlyStageDecision::Invalid;
+    return staged_after_stream_all ? EarlyStageDecision::Inactive
+                                   : EarlyStageDecision::Invalid;
+}
 inline bool qpn_mmq_early_stage_skip(const std::atomic<int64_t>& published_layer,
                                      int64_t layer, const bool* routed) {
     if (!routed || layer < 0) return false;

@@ -4,6 +4,7 @@ on:
     branches: ['qpn/prepacked-stream']
     paths:
       - 'benchmarks/qpn/dispatch/2026-10-30-early-stage.once'
+      - 'benchmarks/qpn/dispatch/2026-10-30-early-stage-phase-fix.once'
   workflow_dispatch:
 permissions:
   contents: read
