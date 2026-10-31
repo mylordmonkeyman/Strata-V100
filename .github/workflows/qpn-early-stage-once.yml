@@ -1,10 +1,11 @@
-name: QPN MMQ early CPU staging first screen (one-shot V100)
+name: QPN MMQ matched-H2D early staging diagnostic (one-shot V100)
 on:
   push:
     branches: ['qpn/prepacked-stream']
     paths:
       - 'benchmarks/qpn/dispatch/2026-10-30-early-stage.once'
       - 'benchmarks/qpn/dispatch/2026-10-30-early-stage-phase-fix.once'
+      - 'benchmarks/qpn/dispatch/2026-10-31-matched-h2d.once'
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Canonical-MMQ H2D-only vs early CPU-stage ABBA
+      - name: Matched published-route H2D vs early CPU-stage ABBA
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +73,7 @@ jobs:
             -DSTRATA_ENABLE_VOLTA_QPN=ON -DSTRATA_QPN_PREFILL_EXPERIMENTAL=ON
           cmake --build "$build" --target strata --parallel 16
           "$state/venv/bin/python" tools/qpn_transition_abba.py \
-            --early-stage-abba \
+            --early-stage-matched-abba \
             --source "$PWD" --binary "$build/strata" \
             --prepared "$state/prepared" --state "$state" \
             --report qpn-early-stage-results

@@ -1,0 +1,11 @@
+# One-shot, default-off matched-H2D MMQ supply diagnostic (2026-10-31)
+# Follow-up to 41168604717: the initial early CPU-stage A/B/B/A
+# completed all four model processes with first-logit bitwise parity and
+# 6.29-6.30 GiB CPU staging omission, but H2D counts differed by 133.
+# New diagnostic waits for each layer's published host route before H2D
+# in BOTH arms, deliberately sacrificing speculative copy lookahead.
+# Four processes are a comparability/feasibility screen ONLY, not a
+# warm-engine, long-context, accepted-token or >=5-repeat qualification.
+# Never publish private routes, weights, logits, prompt or raw logs.
+# Single canonical GPU weight representation per expert; no QPN kernels.
+# Full opt-in CUDA 12.8 compile and host predicates: 41178754999.
