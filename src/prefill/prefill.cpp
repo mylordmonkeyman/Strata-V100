@@ -55,6 +55,9 @@
 #include "qpn_supply_trace.hpp"
 #include "qpn_boundary_capture.hpp"
 #include "qpn_r1_prefill_capture.hpp"
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+#include "qpn_mmq_early_stage.hpp"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -67,6 +70,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <future>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -623,6 +627,16 @@ struct Stager {
     std::condition_variable cv;
     std::vector<std::thread> threads;
     int device = 0;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+    // Only the explicit original-MMQ selective-supply experiment can enable
+    // route-aware CPU staging omission. No resident weight formats change.
+    std::function<bool(int)> early_skip_job;
+    std::atomic<uint64_t> early_skipped_jobs{0}, early_skipped_bytes{0};
+    std::pair<uint64_t,uint64_t> early_skip_counts() const {
+        return {early_skipped_jobs.load(std::memory_order_relaxed),
+                early_skipped_bytes.load(std::memory_order_relaxed)};
+    }
+#endif
 
     bool init(size_t blob_bytes, int nthreads) {
         if (const char* v = std::getenv("STRATA_STAGER_RING")) kRing = std::clamp(std::atoi(v), 2, 256);
@@ -702,6 +716,16 @@ struct Stager {
                 core::ExpertSource* from = nullptr;
                 for (int i = j; i < j + k; ++i) {
                     const Job& jb = jobs[(size_t) i];
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                    if (early_skip_job && early_skip_job(i)) {
+                        // The copy issuer still waits for ready[i] and records
+                        // the same slot-used and copied events. No missing job
+                        // can expose a source buffer that was never prepared.
+                        early_skipped_jobs.fetch_add(1, std::memory_order_relaxed);
+                        early_skipped_bytes.fetch_add(jb.bytes, std::memory_order_relaxed);
+                        continue;
+                    }
+#endif
                     if (jb.from == nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
                     from = jb.from;
                     rl[nr] = jb.l; re[nr] = jb.e; rd[nr] = buf[i % kRing]; ++nr;
@@ -727,10 +751,31 @@ struct Stager {
         }
     }
     /// A layer's jobs; the previous layer's are finished (finish()).
-    void start(std::vector<Job>&& js) {
-        if (js.empty()) return;
+    void start(std::vector<Job>&& js
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+               , std::function<bool(int)> skip_job = {}
+#endif
+               ) {
+        if (js.empty()) {
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+            // A chunk with no transient/unstable blobs must not report an
+            // old chunk's skipped staging counters.
+            early_skip_job = {};
+            early_skipped_jobs.store(0, std::memory_order_relaxed);
+            early_skipped_bytes.store(0, std::memory_order_relaxed);
+#endif
+            return;
+        }
         std::lock_guard<std::mutex> lk(mu);
         jobs = std::move(js);
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        // Only change the callback between generations, after finish() has
+        // waited for all previous workers to retire. No active worker can
+        // observe a moved/destroyed callback or request-local route table.
+        early_skip_job = std::move(skip_job);
+        early_skipped_jobs.store(0, std::memory_order_relaxed);
+        early_skipped_bytes.store(0, std::memory_order_relaxed);
+#endif
         if (ready_cap < jobs.size()) {
             ready_cap = jobs.size() * 2;
             ready.reset(new std::atomic<int>[ready_cap]);
@@ -762,6 +807,9 @@ struct Stager {
         issued.notify_all();
 #endif
         while (active.load(std::memory_order_acquire) != 0) std::this_thread::yield();
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        early_skip_job = {}; // caller-owned routing lifetime ends after this
+#endif
     }
 };
 
@@ -3220,6 +3268,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // fences and drain their host staging jobs, but omit their H2D only.
         bool mmq_supply_diag = false, mmq_skip = false;
 #if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        bool mmq_early_stage = false;
         if (const char* v = std::getenv("STRATA_QPN_MMQ_SELECTIVE_SUPPLY"); v && stream_all) {
             int major = 0, minor = 0;
             const char* mode = std::getenv("STRATA_PREFILL_NVFP4");
@@ -3237,6 +3286,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (!eligible) { err = "experimental selective supply: unsupported MMQ configuration"; return false; }
             mmq_supply_diag = true;
             mmq_skip = std::atoi(v) != 0;
+        }
+        // Deliberately separate from the existing DMA-only control:
+        // an early CPU job skip is safe only when the issuer will also skip
+        // that expert after the same routing publication.
+        if (const char* early = std::getenv("STRATA_QPN_MMQ_EARLY_STAGE");
+            early && std::atoi(early) != 0) {
+            if (!mmq_supply_diag || !mmq_skip) {
+                err = "experimental early MMQ staging requires selective-supply=1 and valid stream-all W4A8";
+                return false;
+            }
+            mmq_early_stage = true;
         }
 #endif
         uint64_t supply_copies = 0, supply_skipped = 0, supply_bytes = 0, supply_skipped_bytes = 0;
@@ -3271,6 +3331,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         struct StreamEntry { int32_t l, e; const uint8_t* blob; int job; bool routed = false; };
         std::vector<StreamEntry> seq;
         std::vector<size_t> seq_start;
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        // Lifetime spans the entire chunk, including worker finish(), and
+        // maps each host staging job to one immutable StreamEntry.
+        std::vector<size_t> early_job_to_seq;
+#endif
         size_t issued = 0, consumed = 0;
         if (stream_all) {
             seq_start.assign((size_t) g.n_layers + 1, 0);
@@ -3292,6 +3357,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const uint8_t* b = nullptr;
                     if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
                         job = (int) js.size();
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                        if (mmq_early_stage) early_job_to_seq.push_back(seq.size());
+#endif
                         js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
                     } else {
                         b = m.src->blob_stable(l, e);
@@ -3307,6 +3375,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         if (!m.src->pinned(l, e)) {
                             job = (int) js.size();
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                            if (mmq_early_stage) early_job_to_seq.push_back(seq.size());
+#endif
                             js.push_back({b, (size_t) lay0.blob_bytes(l)});
                         }
                     }
@@ -3317,7 +3388,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 seq_start[(size_t) l] = seq.size();
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
             }
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+            std::function<bool(int)> early_selector;
+            if (mmq_early_stage) {
+                if (early_job_to_seq.size() != js.size()) {
+                    err = "experimental early MMQ staging: job/route map mismatch";
+                    return false;
+                }
+                early_selector = [&](int i) {
+                    const size_t index = early_job_to_seq[(size_t) i];
+                    const StreamEntry& en = seq[index];
+                    // A published-layer acquire synchronizes the worker with
+                    // the route writer. Never read en.routed before acquire.
+                    return detail::qpn_mmq_early_stage_skip(routing_ready, en.l, &en.routed);
+                };
+            }
+            m.stager->start(std::move(js), std::move(early_selector));
+#else
             m.stager->start(std::move(js));
+#endif
         }
         struct StagerDone {
             Stager* st;
@@ -3334,6 +3423,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 // copy_blob: a Stager job is always drained, an unpublished layer is always copied, and a
                 // published one leaves out only the blobs its routing did not pick.  The slot protocol below is
                 // untouched - its `used` wait, its `copied` record and its live flag happen for a skipped entry too.
+                // In the early-stage experiment, freeze the worker's stage/skip
+                // decision before deriving copy_blob. Otherwise the issuer could
+                // decide "copy" before publication while the worker skips later.
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                if (mmq_early_stage && en.job >= 0) (void) m.stager->wait(en.job);
+#endif
                 const bool copy_blob = (en.job >= 0 && !mmq_skip) || !skip_on ||
                                        routing_ready.load(std::memory_order_acquire) < (int64_t) en.l || en.routed;
                 if (mmq_supply_diag) {
@@ -3402,6 +3497,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
                     if (m.stage_live[sl]) supply.reuse_wait(en.l, m.copy, m.used[m.used_of[sl]]);
+                    // In the early-stage experiment, freeze the worker's stage/skip
+                    // decision before deriving copy_blob. Otherwise the issuer could
+                    // decide "copy" before publication while the worker skips later.
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+                    if (mmq_early_stage && en.job >= 0) (void) m.stager->wait(en.job);
+#endif
                     const bool copy_blob = (en.job >= 0 && !mmq_skip) || !skip_on ||
                                            routing_ready.load(std::memory_order_acquire) < (int64_t) en.l || en.routed;
                     if (mmq_supply_diag) {
@@ -5891,6 +5992,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             stats_.experts_dma += iss_dma;
         }
         // Only inspect producer counters after the issuer join above. No expert IDs or payloads are exported.
+#if defined(STRATA_QPN_PREFILL_EXPERIMENTAL) && !defined(STRATA_USE_HIP)
+        if (mmq_early_stage) {
+            const auto [jobs, bytes] = m.stager->early_skip_counts();
+            if (jobs > supply_skipped_jobs || bytes > supply_skipped_bytes) {
+                err = "experimental early MMQ stage/copy omission mismatch";
+                return false;
+            }
+            std::fprintf(stderr,
+                "strata qpn early-stage: chunk=%lld tokens=%lld cpu_jobs_omitted=%llu cpu_bytes_omitted=%llu\n",
+                (long long) p0, (long long) T,
+                (unsigned long long) jobs, (unsigned long long) bytes);
+        }
+#endif
         if (mmq_supply_diag) {
             std::fprintf(stderr, "strata qpn selective-supply: chunk=%lld tokens=%lld entries=%llu copies=%llu skipped=%llu bytes=%llu skipped_bytes=%llu jobs=%llu skipped_jobs=%llu\n",
                          (long long) p0, (long long) T, (unsigned long long) seq.size(),

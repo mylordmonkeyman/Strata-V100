@@ -78,4 +78,8 @@ if(STRATA_BUILD_TESTS)
   add_executable(qpn_prefill_policy_test tests/qpn_prefill_policy_test.cpp)
   target_include_directories(qpn_prefill_policy_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
   add_test(NAME qpn_prefill_policy COMMAND qpn_prefill_policy_test)
+  # Performance-first CPU staging omission predicate: always host-only,
+  # independent of CUDA and the default-off experimental prefill binary.
+  add_executable(qpn_mmq_early_stage_host_test tests/host/qpn_mmq_early_stage_test.cpp)
+  add_test(NAME qpn_mmq_early_stage_host COMMAND qpn_mmq_early_stage_host_test)
 endif()
