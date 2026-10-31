@@ -98,3 +98,20 @@ For this same deterministic synthetic sample, gate/up/down tail-preserved Q4 pro
 A source-level edge case is now explicitly tested: pinned ggml's UE4M3 conversion masks the exponent with `(code >> 3) & 0xF`, while the special byte `0x7F` maps to zero; `0xFF` therefore decodes to a nonzero finite value, not to the `0x7F` sentinel. An artifact converter must use the pinned decoder's actual byte semantics and preserve original source identity; it cannot assume arbitrary high-bit scale codes have canonical values.
 
 **Decision:** Q4-0 remains **PARTIAL**. Encoded synthetic QAD source-to-Q4 parity is now host-validated, but **real QAD checkpoint expert fidelity, FP32 tail ABI and CPU fastpath scale consistency, full-model numerical quality, and R1 exposed-time performance opportunity remain unqualified**. Do not launch Q4TC GPU work or retain two representations of any expert in VRAM. All stopped QPN and early-staging subtracks remain stopped.
+
+## Expanded source-locked encoded-QAD stress fixture (host-only; validation pending)
+
+The pinned-ggml Q4_K/IQ4_NL fixture now checks **four deterministic
+synthetic NVFP4 encoding patterns per projection** (24 source/quantizer
+mode records total). In addition to the prior baseline, these cover
+sparse/sentinel-coded blocks, wider UE4M3 exponent variation, and
+sign-skewed E2M1 patterns. Each case is checked against an independent
+Python NVFP4 decoder and Q4_K/IQ4_NL decoder; both the production and
+reference ggml quantizers are compared, with preserved and folded FP32
+tail scales, including a signed nonunit tail. Relative reconstruction
+errors are aggregated by projection and quantizer/scale mode.
+
+This is a **synthetic distribution stress test**, not a real QAD checkpoint
+sample or proof of full-model numerical fidelity. The experimental path
+remains default-off. No GPU benchmark, runtime ABI change, dual-format
+VRAM residency or stopped-subtrack rerun is authorized by this addition.
